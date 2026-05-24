@@ -16,6 +16,7 @@ class QLabel;
 class QPushButton;
 class QRadioButton;
 class QScrollArea;
+class QSpinBox;
 class QTableWidget;
 class QVBoxLayout;
 class QWidget;
@@ -30,6 +31,8 @@ public:
   void PopulateFromState(const MSB_QuickMatchState& state);
   void Clear();
   bool IsEnabled() const;
+  bool IsDirty() const;
+  void ApplyNow();
   MSB_QuickMatchState BuildState() const;
 
 signals:
@@ -41,8 +44,11 @@ private:
   void CreatePreGameSection(QVBoxLayout* content_layout);
   void CreateRosterSection(QVBoxLayout* content_layout);
   QTableWidget* CreateTeamTable(QButtonGroup* captain_group);
+  void CreateInGameSection(QVBoxLayout* content_layout);
   void ConnectWidgets();
   void UpdateEditability();
+  void UpdateRunnerLabels();
+  void UpdateP1Side();
 
   // Helpers for BuildState / PopulateFromState
   void PopulateTeamFromState(const MSB_Team& team, QTableWidget* table,
@@ -73,10 +79,25 @@ private:
   QButtonGroup* m_away_captain_group;
   QButtonGroup* m_home_captain_group;
 
+  // In-Game State
+  QGroupBox*  m_ingame_group;
+  QComboBox*  m_inning_combo;
+  QComboBox*  m_half_inning_combo;
+  QSpinBox*   m_away_score_spin;
+  QSpinBox*   m_home_score_spin;
+  QComboBox*  m_balls_combo;
+  QComboBox*  m_strikes_combo;
+  QComboBox*  m_outs_combo;
+  QComboBox*  m_star_chance_combo;
+  std::array<QCheckBox*, 3> m_runner_check;
+  std::array<QComboBox*, 3> m_runner_slot_combo;
+  std::array<QLabel*, 3>    m_runner_char_label;
+
   // Scroll content
   QWidget* m_scroll_content;
 
-  bool m_is_host = false;
+  bool m_is_host    = false;
+  bool m_state_dirty = false;
 
   // Column indices for the roster table
   enum Col

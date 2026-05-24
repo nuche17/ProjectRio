@@ -15,6 +15,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollArea>
+#include <QSpinBox>
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -117,15 +118,7 @@ void MSBGameStateWidget::CreateLayout()
 
   CreatePreGameSection(content);
   CreateRosterSection(content);
-
-  // ── In-Game placeholder ─────────────────────────────────────────────────────
-  auto* ig_group  = new QGroupBox(tr("In-Game State"));
-  auto* ig_layout = new QVBoxLayout(ig_group);
-  auto* ig_label  = new QLabel(tr("In-game state editing coming in Step 3."));
-  ig_label->setAlignment(Qt::AlignCenter);
-  ig_label->setStyleSheet(QStringLiteral("color: gray; font-style: italic;"));
-  ig_layout->addWidget(ig_label);
-  content->addWidget(ig_group);
+  CreateInGameSection(content);
 
   content->addStretch();
 }
@@ -148,24 +141,21 @@ void MSBGameStateWidget::CreatePreGameSection(QVBoxLayout* content)
 
   m_innings_combo = new QComboBox;
   m_innings_combo->addItem(tr("— Not Set —"), QVariant());
-  for (int v : {3, 5, 7, 9, 11, 13, 15, 17, 19})
+  for (int v : {1, 3, 5, 7, 9, 11, 13, 15, 17, 19})
     m_innings_combo->addItem(QString::number(v), QVariant(v));
   form->addRow(tr("Innings:"), m_innings_combo);
 
   m_first_batter_combo = new QComboBox;
-  m_first_batter_combo->addItem(tr("— Not Set —"), QVariant());
   m_first_batter_combo->addItem(tr("P1"), QVariant(0));
   m_first_batter_combo->addItem(tr("P2"), QVariant(1));
   form->addRow(tr("First Batter:"), m_first_batter_combo);
 
   m_star_skills_combo = new QComboBox;
-  m_star_skills_combo->addItem(tr("— Not Set —"), QVariant());
   m_star_skills_combo->addItem(tr("Off"), QVariant(0));
   m_star_skills_combo->addItem(tr("On"),  QVariant(1));
   form->addRow(tr("Star Skills:"), m_star_skills_combo);
 
   m_mercy_combo = new QComboBox;
-  m_mercy_combo->addItem(tr("— Not Set —"), QVariant());
   m_mercy_combo->addItem(tr("Off"), QVariant(0));
   m_mercy_combo->addItem(tr("On"),  QVariant(1));
   form->addRow(tr("Mercy Rule:"), m_mercy_combo);
@@ -180,10 +170,12 @@ void MSBGameStateWidget::CreateRosterSection(QVBoxLayout* content)
 
   // Options row: which side is P1, and handedness toggle
   auto* opts = new QHBoxLayout;
-  opts->addWidget(new QLabel(tr("P1 plays:")));
+  opts->addWidget(new QLabel(tr("P1 side (auto):")));
   m_p1_side_combo = new QComboBox;
   m_p1_side_combo->addItem(tr("Away"), QVariant(true));
   m_p1_side_combo->addItem(tr("Home"), QVariant(false));
+  m_p1_side_combo->setEnabled(false);
+  m_p1_side_combo->setToolTip(tr("Derived from First Batter and Half Inning."));
   opts->addWidget(m_p1_side_combo);
   opts->addStretch();
   m_show_hand_check = new QCheckBox(tr("Show Handedness"));
@@ -218,7 +210,7 @@ QTableWidget* MSBGameStateWidget::CreateTeamTable(QButtonGroup* captain_group)
 {
   auto* table = new QTableWidget(9, COL_COUNT);
   table->setHorizontalHeaderLabels(
-      {tr("Character"), tr("Position"), tr("Capt"), tr("SS"), tr("Bat"), tr("Fld")});
+      {tr("Character"), tr("Position"), tr("Capt"), QString::fromUtf8("★"), tr("Bat"), tr("Fld")});
   table->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
   table->verticalHeader()->setDefaultSectionSize(24);
   table->horizontalHeader()->setStretchLastSection(false);
@@ -268,24 +260,149 @@ QTableWidget* MSBGameStateWidget::CreateTeamTable(QButtonGroup* captain_group)
   return table;
 }
 
+void MSBGameStateWidget::CreateInGameSection(QVBoxLayout* content)
+{
+  m_ingame_group = new QGroupBox(tr("In-Game State"));
+  content->addWidget(m_ingame_group);
+
+  auto* form = new QFormLayout(m_ingame_group);
+  form->setLabelAlignment(Qt::AlignRight);
+  form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+  m_inning_combo = new QComboBox;
+  for (int v = 1; v <= 18; ++v)
+    m_inning_combo->addItem(QString::number(v), QVariant(v));
+  form->addRow(tr("Inning:"), m_inning_combo);
+
+  m_half_inning_combo = new QComboBox;
+  m_half_inning_combo->addItem(tr("Top"),    QVariant(0));
+  m_half_inning_combo->addItem(tr("Bottom"), QVariant(1));
+  form->addRow(tr("Half:"), m_half_inning_combo);
+
+  m_away_score_spin = new QSpinBox;
+  m_away_score_spin->setRange(0, 255);
+  form->addRow(tr("Away Score:"), m_away_score_spin);
+
+  m_home_score_spin = new QSpinBox;
+  m_home_score_spin->setRange(0, 255);
+  form->addRow(tr("Home Score:"), m_home_score_spin);
+
+  m_balls_combo = new QComboBox;
+  for (int v = 0; v <= 3; ++v)
+    m_balls_combo->addItem(QString::number(v), QVariant(v));
+  form->addRow(tr("Balls:"), m_balls_combo);
+
+  m_strikes_combo = new QComboBox;
+  for (int v = 0; v <= 2; ++v)
+    m_strikes_combo->addItem(QString::number(v), QVariant(v));
+  form->addRow(tr("Strikes:"), m_strikes_combo);
+
+  m_outs_combo = new QComboBox;
+  for (int v = 0; v <= 2; ++v)
+    m_outs_combo->addItem(QString::number(v), QVariant(v));
+  form->addRow(tr("Outs:"), m_outs_combo);
+
+  m_star_chance_combo = new QComboBox;
+  m_star_chance_combo->addItem(tr("Off"), QVariant(0));
+  m_star_chance_combo->addItem(tr("On"),  QVariant(1));
+  form->addRow(tr("Star Chance:"), m_star_chance_combo);
+
+  // Runners
+  auto* runners_label = new QLabel(tr("Batting order slot of runners on base"));
+  runners_label->setStyleSheet(QStringLiteral("font-style: italic;"));
+  form->addRow(runners_label);
+
+  static const char* BASE_LABELS[3] = {"1st Base:", "2nd Base:", "3rd Base:"};
+  for (int base = 0; base < 3; ++base)
+  {
+    auto* row_w   = new QWidget;
+    auto* row_lay = new QHBoxLayout(row_w);
+    row_lay->setContentsMargins(0, 0, 0, 0);
+    row_lay->setSpacing(4);
+
+    m_runner_check[base] = new QCheckBox;
+    row_lay->addWidget(m_runner_check[base]);
+
+    m_runner_slot_combo[base] = new QComboBox;
+    m_runner_slot_combo[base]->addItem(tr("—"), QVariant());
+    for (int slot = 0; slot < 9; ++slot)
+      m_runner_slot_combo[base]->addItem(QString::number(slot + 1), QVariant(slot));
+    m_runner_slot_combo[base]->setEnabled(false);
+    row_lay->addWidget(m_runner_slot_combo[base]);
+
+    m_runner_char_label[base] = new QLabel(QStringLiteral("—"));
+    m_runner_char_label[base]->setMinimumWidth(80);
+    row_lay->addWidget(m_runner_char_label[base]);
+    row_lay->addStretch();
+
+    form->addRow(tr(BASE_LABELS[base]), row_w);
+  }
+}
+
+void MSBGameStateWidget::UpdateRunnerLabels()
+{
+  // Top of inning = away team bats; m_away_table always holds the away team's roster
+  const bool halfTop     = (m_half_inning_combo->currentData().toInt() == 0);
+  QTableWidget* bat_tbl  = halfTop ? m_away_table : m_home_table;
+
+  for (int base = 0; base < 3; ++base)
+  {
+    if (!m_runner_check[base]->isChecked())
+    {
+      m_runner_char_label[base]->setText(QStringLiteral("—"));
+      continue;
+    }
+    const QVariant slot_v = m_runner_slot_combo[base]->currentData();
+    if (slot_v.isNull())
+    {
+      m_runner_char_label[base]->setText(QStringLiteral("—"));
+      continue;
+    }
+    const int slot        = slot_v.toInt();
+    auto* char_combo      = static_cast<QComboBox*>(bat_tbl->cellWidget(slot, COL_CHARACTER));
+    const QVariant char_v = char_combo ? char_combo->currentData() : QVariant();
+    m_runner_char_label[base]->setText(char_v.isNull() ? QStringLiteral("—")
+                                                       : char_combo->currentText());
+  }
+}
+
+void MSBGameStateWidget::UpdateP1Side()
+{
+  const QVariant fb_v = m_first_batter_combo->currentData();
+  if (fb_v.isNull())
+    return;
+  const bool firstBatterIsP1 = (fb_v.toInt() == 0);
+  const bool halfTop          = (m_half_inning_combo->currentData().toInt() == 0);
+  const bool p1IsAway         = (firstBatterIsP1 == halfTop);
+  m_p1_side_combo->setCurrentIndex(p1IsAway ? 0 : 1);
+}
+
 // ── Signal wiring ─────────────────────────────────────────────────────────────
 
 void MSBGameStateWidget::ConnectWidgets()
 {
   connect(m_enable_check, &QCheckBox::stateChanged, this, [this](int) {
     UpdateEditability();
-    if (!m_enable_check->isChecked())
+    if (m_enable_check->isChecked())
+    {
+      m_state_dirty = true;
+    }
+    else
     {
       Clear();
+      m_state_dirty = false;
       emit ClearRequested();
     }
   });
 
-  connect(m_apply_btn, &QPushButton::clicked, this,
-          [this] { emit ApplyRequested(BuildState()); });
+  connect(m_apply_btn, &QPushButton::clicked, this, [this] {
+    m_state_dirty = false;
+    emit ApplyRequested(BuildState());
+  });
 
   connect(m_clear_btn, &QPushButton::clicked, this, [this] {
     Clear();
+    m_state_dirty = false;
     emit ClearRequested();
   });
 
@@ -297,6 +414,72 @@ void MSBGameStateWidget::ConnectWidgets()
       t->setColumnHidden(COL_FLD_HAND, !show);
     }
   });
+
+  // P1 side is derived from first batter + half inning
+  connect(m_first_batter_combo, &QComboBox::currentIndexChanged,
+          this, [this](int) { UpdateP1Side(); UpdateRunnerLabels(); });
+  connect(m_half_inning_combo, &QComboBox::currentIndexChanged,
+          this, [this](int) { UpdateP1Side(); UpdateRunnerLabels(); });
+
+  // Runner label updates when runner checkbox/slot changes
+  for (int base = 0; base < 3; ++base)
+  {
+    connect(m_runner_check[base], &QCheckBox::stateChanged, this, [this, base](int state) {
+      m_runner_slot_combo[base]->setEnabled(state == Qt::Checked);
+      UpdateRunnerLabels();
+    });
+    connect(m_runner_slot_combo[base], &QComboBox::currentIndexChanged,
+            this, [this](int) { UpdateRunnerLabels(); });
+  }
+
+  // Runner label updates when any roster character changes
+  for (QTableWidget* t : {m_away_table, m_home_table})
+  {
+    for (int row = 0; row < 9; ++row)
+    {
+      auto* char_combo = static_cast<QComboBox*>(t->cellWidget(row, COL_CHARACTER));
+      connect(char_combo, &QComboBox::currentIndexChanged,
+              this, [this](int) { UpdateRunnerLabels(); });
+    }
+  }
+
+  // Mark dirty when any field value changes
+  auto markDirty = [this] { m_state_dirty = true; };
+
+  for (QComboBox* c : {m_stadium_combo, m_innings_combo, m_first_batter_combo,
+                       m_star_skills_combo, m_mercy_combo, m_inning_combo,
+                       m_half_inning_combo, m_balls_combo, m_strikes_combo,
+                       m_outs_combo, m_star_chance_combo})
+  {
+    connect(c, &QComboBox::currentIndexChanged, this, markDirty);
+  }
+  connect(m_away_score_spin, &QSpinBox::valueChanged, this, markDirty);
+  connect(m_home_score_spin, &QSpinBox::valueChanged, this, markDirty);
+
+  for (int base = 0; base < 3; ++base)
+  {
+    connect(m_runner_check[base],    &QCheckBox::stateChanged,        this, markDirty);
+    connect(m_runner_slot_combo[base], &QComboBox::currentIndexChanged, this, markDirty);
+  }
+
+  for (QTableWidget* t : {m_away_table, m_home_table})
+  {
+    for (int row = 0; row < 9; ++row)
+    {
+      connect(static_cast<QComboBox*>(t->cellWidget(row, COL_CHARACTER)),
+              &QComboBox::currentIndexChanged, this, markDirty);
+      connect(static_cast<QComboBox*>(t->cellWidget(row, COL_POSITION)),
+              &QComboBox::currentIndexChanged, this, markDirty);
+      connect(static_cast<QComboBox*>(t->cellWidget(row, COL_BAT_HAND)),
+              &QComboBox::currentIndexChanged, this, markDirty);
+      connect(static_cast<QComboBox*>(t->cellWidget(row, COL_FLD_HAND)),
+              &QComboBox::currentIndexChanged, this, markDirty);
+      auto* capt = t->cellWidget(row, COL_CAPTAIN)->findChild<QRadioButton*>();
+      auto* ss   = t->cellWidget(row, COL_SUPERSTAR)->findChild<QCheckBox*>();
+      connect(capt, &QRadioButton::toggled,    this, markDirty);
+      connect(ss,   &QCheckBox::stateChanged,  this, markDirty);
+    }
+  }
 }
 
 void MSBGameStateWidget::UpdateEditability()
@@ -306,6 +489,7 @@ void MSBGameStateWidget::UpdateEditability()
   m_apply_btn->setEnabled(editable);
   m_clear_btn->setEnabled(editable);
   m_scroll_content->setEnabled(editable);
+  m_p1_side_combo->setEnabled(false);  // always read-only — derived from first batter + half inning
 }
 
 // ── Public interface ──────────────────────────────────────────────────────────
@@ -322,17 +506,47 @@ bool MSBGameStateWidget::IsEnabled() const
   return m_enable_check->isChecked();
 }
 
+bool MSBGameStateWidget::IsDirty() const
+{
+  return m_state_dirty;
+}
+
+void MSBGameStateWidget::ApplyNow()
+{
+  m_state_dirty = false;
+  emit ApplyRequested(BuildState());
+}
+
 void MSBGameStateWidget::Clear()
 {
-  // Pre-game
+  // Pre-game — stadium and innings have no default (Not Set)
   m_stadium_combo->setCurrentIndex(0);
   m_innings_combo->setCurrentIndex(0);
-  m_first_batter_combo->setCurrentIndex(0);
-  m_star_skills_combo->setCurrentIndex(0);
-  m_mercy_combo->setCurrentIndex(0);
+  // First batter, star skills, mercy always have a value — default P2 / On / On
+  m_first_batter_combo->setCurrentIndex(m_first_batter_combo->findData(QVariant(1)));
+  m_star_skills_combo->setCurrentIndex(m_star_skills_combo->findData(QVariant(1)));
+  m_mercy_combo->setCurrentIndex(m_mercy_combo->findData(QVariant(1)));
+
+  // In-game (reset to clean-start defaults)
+  m_inning_combo->setCurrentIndex(0);        // Inning 1
+  m_half_inning_combo->setCurrentIndex(0);   // Top
+  m_away_score_spin->setValue(0);
+  m_home_score_spin->setValue(0);
+  m_balls_combo->setCurrentIndex(0);
+  m_strikes_combo->setCurrentIndex(0);
+  m_outs_combo->setCurrentIndex(0);
+  m_star_chance_combo->setCurrentIndex(0);   // Off
+  for (int base = 0; base < 3; ++base)
+  {
+    m_runner_check[base]->setChecked(false);
+    m_runner_slot_combo[base]->setCurrentIndex(0);
+    m_runner_slot_combo[base]->setEnabled(false);
+  }
+  UpdateRunnerLabels();
+  UpdateP1Side();
 
   // Rosters
-  m_p1_side_combo->setCurrentIndex(0);  // P1 = Away
+  m_p1_side_combo->setCurrentIndex(0);  // will be overwritten by UpdateP1Side above
   for (QTableWidget* table : {m_away_table, m_home_table})
   {
     for (int row = 0; row < 9; ++row)
@@ -361,9 +575,9 @@ void MSBGameStateWidget::PopulateFromState(const MSB_QuickMatchState& state)
   // Pre-game
   SetComboByData(m_stadium_combo,      state.GetStadium());
   SetComboByData(m_innings_combo,      state.GetInningsSelected());
-  SetComboByData(m_first_batter_combo, state.GetFirstBatter());
-  SetComboByData(m_star_skills_combo,  state.GetStarSkills());
-  SetComboByData(m_mercy_combo,        state.GetMercy());
+  SetComboByData(m_first_batter_combo, state.GetFirstBatter().value_or(1));   // default P2
+  SetComboByData(m_star_skills_combo,  state.GetStarSkills().value_or(1));    // default On
+  SetComboByData(m_mercy_combo,        state.GetMercy().value_or(1));         // default On
 
   // P1 side
   const bool p1IsAway = state.GetP1IsAway();
@@ -374,6 +588,49 @@ void MSBGameStateWidget::PopulateFromState(const MSB_QuickMatchState& state)
   const MSB_Team& homeTeam = p1IsAway ? state.GetP2() : state.GetP1();
   PopulateTeamFromState(awayTeam, m_away_table, m_away_captain_group);
   PopulateTeamFromState(homeTeam, m_home_table, m_home_captain_group);
+
+  // In-game
+  auto setComboFromInt = [](QComboBox* combo, int val) {
+    const int idx = combo->findData(QVariant(val));
+    combo->setCurrentIndex(idx >= 0 ? idx : 0);
+  };
+
+  setComboFromInt(m_inning_combo,      static_cast<int>(state.GetInning().value_or(1)));
+  setComboFromInt(m_half_inning_combo, static_cast<int>(state.GetHalfInning().value_or(0)));
+  m_away_score_spin->setValue(static_cast<int>(state.GetAwayScore().value_or(0)));
+  m_home_score_spin->setValue(static_cast<int>(state.GetHomeScore().value_or(0)));
+  setComboFromInt(m_balls_combo,       static_cast<int>(state.GetBalls().value_or(0)));
+  setComboFromInt(m_strikes_combo,     static_cast<int>(state.GetStrikes().value_or(0)));
+  setComboFromInt(m_outs_combo,        static_cast<int>(state.GetOuts().value_or(0)));
+  setComboFromInt(m_star_chance_combo, static_cast<int>(state.GetIsStarChance().value_or(0)));
+
+  // Runners — resolve fielding position → batting slot via the batting team
+  const bool halfTop = (state.GetHalfInning().value_or(0) == 0);
+  const MSB_Team& battingTeam = (halfTop == p1IsAway) ? state.GetP1() : state.GetP2();
+  for (int base = 0; base < 3; ++base)
+  {
+    const auto fieldingPos = state.GetRunnerFieldingPosition(base);
+    if (!fieldingPos.has_value())
+    {
+      m_runner_check[base]->setChecked(false);
+      m_runner_slot_combo[base]->setCurrentIndex(0);
+      m_runner_slot_combo[base]->setEnabled(false);
+      continue;
+    }
+    const MSB_Player* p = battingTeam.GetPlayer(static_cast<uint8_t>(fieldingPos.value()));
+    if (!p || !p->battingOrderSlot.has_value())
+    {
+      m_runner_check[base]->setChecked(false);
+      m_runner_slot_combo[base]->setCurrentIndex(0);
+      m_runner_slot_combo[base]->setEnabled(false);
+      continue;
+    }
+    m_runner_check[base]->setChecked(true);
+    m_runner_slot_combo[base]->setEnabled(true);
+    setComboFromInt(m_runner_slot_combo[base], static_cast<int>(p->battingOrderSlot.value()));
+  }
+  UpdateRunnerLabels();
+  UpdateP1Side();
 }
 
 void MSBGameStateWidget::PopulateTeamFromState(const MSB_Team& team, QTableWidget* table,
@@ -453,6 +710,27 @@ MSB_QuickMatchState MSBGameStateWidget::BuildState() const
   {
     state.SetP1(homeTeam);
     state.SetP2(awayTeam);
+  }
+
+  // In-game (always written — all fields have defaults)
+  state.SetInning(static_cast<uint32_t>(m_inning_combo->currentData().toInt()));
+  state.SetHalfInning(static_cast<uint8_t>(m_half_inning_combo->currentData().toInt()));
+  state.SetAwayScore(static_cast<uint16_t>(m_away_score_spin->value()));
+  state.SetHomeScore(static_cast<uint16_t>(m_home_score_spin->value()));
+  state.SetBalls(static_cast<uint32_t>(m_balls_combo->currentData().toInt()));
+  state.SetStrikes(static_cast<uint32_t>(m_strikes_combo->currentData().toInt()));
+  state.SetOuts(static_cast<uint32_t>(m_outs_combo->currentData().toInt()));
+  state.SetIsStarChance(static_cast<uint8_t>(m_star_chance_combo->currentData().toInt()));
+
+  // Runners — batting team is whichever side is up this half inning
+  const bool halfTop = (m_half_inning_combo->currentData().toInt() == 0);
+  const bool useP1   = (halfTop == p1IsAway);  // top=away bats; p1IsAway → P1 is away
+  for (int base = 0; base < 3; ++base)
+  {
+    if (!m_runner_check[base]->isChecked()) continue;
+    const QVariant slot_v = m_runner_slot_combo[base]->currentData();
+    if (slot_v.isNull()) continue;
+    state.SetRunner(base, static_cast<uint8_t>(slot_v.toInt()), useP1);
   }
 
   return state;

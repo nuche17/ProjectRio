@@ -44,6 +44,7 @@
 #include "Core/HW/GBACore.h"
 #endif
 #include "Core/IOS/FS/FileSystem.h"
+#include "Core/GeckoCodeConfig.h"
 #include "Core/NetPlayServer.h"
 #include "Core/SyncIdentifier.h"
 
@@ -287,6 +288,16 @@ void NetPlayDialog::CreateMainLayout()
 
   m_game_state_widget = new MSBGameStateWidget;
   m_game_state_widget->setMinimumWidth(220);
+
+  connect(m_game_state_widget, &MSBGameStateWidget::ApplyRequested,
+          this, [](const MSB_QuickMatchState& state) {
+            Gecko::HUDState = state;
+            Gecko::isLoadingFromHUD = true;
+          });
+  connect(m_game_state_widget, &MSBGameStateWidget::ClearRequested,
+          this, []() {
+            Gecko::isLoadingFromHUD = false;
+          });
 
   m_splitter->addWidget(m_chat_box);
   m_splitter->addWidget(m_players_box);
@@ -734,6 +745,12 @@ void NetPlayDialog::OnIndexRefreshFailed(const std::string error)
 
 void NetPlayDialog::OnStart()
 {
+  if (m_game_state_widget->IsEnabled() && m_game_state_widget->IsDirty())
+  {
+    m_game_state_widget->ApplyNow();
+    DisplayMessage(tr("Game state auto-applied before start."), "steelblue");
+  }
+
   if (!Settings::Instance().GetNetPlayClient()->DoAllPlayersHaveGame())
   {
     if (ModalMessageBox::question(
@@ -1180,6 +1197,7 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
     m_night_stadium->setEnabled(enabled);
     m_disable_replays->setEnabled(enabled);
     m_fast_reset_from_HUD->setEnabled(enabled);
+    m_game_state_widget->setEnabled(enabled);
     //m_night_stadium_action->setEnabled(enabled);
     //m_disable_music_action->setEnabled(enabled);
     //m_highlight_ball_shadow_action->setEnabled(enabled);
