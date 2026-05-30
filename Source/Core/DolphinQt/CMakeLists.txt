@@ -109,6 +109,8 @@ add_executable(dolphin-emu
   Config/Graphics/PostProcessingConfigWindow.h
   Config/GraphicsModListWidget.cpp
   Config/GraphicsModListWidget.h
+  Config/TexturePackManagerDialog.cpp
+  Config/TexturePackManagerDialog.h
   Config/GraphicsModWarningWidget.cpp
   Config/GraphicsModWarningWidget.h
   Config/HardcoreWarningWidget.cpp
@@ -284,8 +286,6 @@ add_executable(dolphin-emu
   MenuBar.h
   NetPlay/ChunkedProgressDialog.cpp
   NetPlay/ChunkedProgressDialog.h
-  NetPlay/MSBGameStateWidget.cpp
-  NetPlay/MSBGameStateWidget.h
   NetPlay/GameDigestDialog.cpp
   NetPlay/GameDigestDialog.h
   NetPlay/GameListDialog.cpp

@@ -49,7 +49,6 @@
 #include "Core/SyncIdentifier.h"
 
 #include "DolphinQt/NetPlay/ChunkedProgressDialog.h"
-#include "DolphinQt/NetPlay/MSBGameStateWidget.h"
 #include "DolphinQt/NetPlay/GameDigestDialog.h"
 #include "DolphinQt/NetPlay/GameListDialog.h"
 #include "DolphinQt/NetPlay/PadMappingDialog.h"
@@ -120,18 +119,6 @@ NetPlayDialog::NetPlayDialog(const GameListModel& game_list_model,
 
   restoreGeometry(settings.value(QStringLiteral("netplaydialog/geometry")).toByteArray());
   m_splitter->restoreState(settings.value(QStringLiteral("netplaydialog/splitter")).toByteArray());
-
-  // If the saved splitter state predates the game-state panel it will have restored
-  // the third widget to zero width. Give it a sensible default in that case.
-  {
-    const QList<int> sizes = m_splitter->sizes();
-    if (sizes.size() < 3 || sizes[2] == 0)
-    {
-      const int total = sizes.size() >= 2 ? sizes[0] + sizes[1] : 900;
-      m_splitter->setSizes({total * 2 / 5, total * 2 / 5, total * 1 / 5});
-    }
-  }
-
   srand(time(0));
 }
 
@@ -288,6 +275,16 @@ void NetPlayDialog::CreateMainLayout()
 
   m_game_state_widget = new MSBGameStateWidget;
   m_game_state_widget->setMinimumWidth(220);
+  
+  connect(m_game_state_widget, &MSBGameStateWidget::ApplyRequested,
+          this, [](const MSB_QuickMatchState& state) {
+            Gecko::HUDState = state;
+            Gecko::isLoadingFromHUD = true;
+          });
+  connect(m_game_state_widget, &MSBGameStateWidget::ClearRequested,
+          this, []() {
+            Gecko::isLoadingFromHUD = false;
+          });
 
   connect(m_game_state_widget, &MSBGameStateWidget::ApplyRequested,
           this, [](const MSB_QuickMatchState& state) {
@@ -301,7 +298,6 @@ void NetPlayDialog::CreateMainLayout()
 
   m_splitter->addWidget(m_chat_box);
   m_splitter->addWidget(m_players_box);
-  m_splitter->addWidget(m_game_state_widget);
 
   auto* options_widget = new QGridLayout;
 
@@ -723,9 +719,10 @@ void NetPlayDialog::OnGameMode(std::string mode, std::string description,
     if (tag != mode)
       tags_string.append(" " + tag + ",");
   }
-  tags_string.pop_back(); // remove final delimiter
+  if (!tags_string.empty())
+    tags_string.pop_back();
 
-  DisplayMessage(tr("Game Mode: %1").arg(QString::fromStdString(mode)),"darkgoldenrod");
+  DisplayMessage(tr("Game Mode: %1").arg(QString::fromStdString(mode)), "darkgoldenrod");
   DisplayMessage(tr("%1").arg(QString::fromStdString(description)), "goldenrod");
   DisplayMessage(tr("Tags:%1").arg(QString::fromStdString(tags_string)), "goldenrod");
 }
@@ -838,9 +835,6 @@ void NetPlayDialog::show(bool use_traversal)
   m_disable_replays->setEnabled(is_hosting);
   m_fast_reset_from_HUD->setHidden(!is_hosting);
   m_fast_reset_from_HUD->setEnabled(is_hosting);
-
-  m_game_state_widget->SetHostMode(is_hosting);
-  m_game_state_widget->Clear();
 
   UpdateLobbyLayout();
   SetOptionsEnabled(true);
@@ -1139,8 +1133,7 @@ void NetPlayDialog::UpdateLobbyLayout()
       m_disable_replays->setVisible(true);
       m_fast_reset_from_HUD->setVisible(true);
     }
-
-    m_game_state_widget->setVisible(true);
+    
     m_random_stadium->setVisible(true);
     m_random_9->setVisible(false);
     m_random_18->setVisible(false);
@@ -1151,8 +1144,6 @@ void NetPlayDialog::UpdateLobbyLayout()
     m_disable_replays->setVisible(false);
     m_fast_reset_from_HUD->setVisible(false);
 
-    m_game_state_widget->setVisible(true);  // TODO: restore to false once layout confirmed working
-    m_game_state_widget->Clear();
     m_random_stadium->setVisible(false);
     m_random_9->setVisible(true);
     m_random_18->setVisible(true);

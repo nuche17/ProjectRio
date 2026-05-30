@@ -238,7 +238,7 @@ void MGTTCalculateNextGolfer(const Core::CPUThreadGuard& guard, int& nextGolfer)
 
 void AutoGolfMode(const Core::CPUThreadGuard& guard);
 void TrainingMode(const Core::CPUThreadGuard& guard);
-void MSBQuickMatchBattingOrderMsg(const Core::CPUThreadGuard& guard, MSB_QuickMatchState& state);
+void MSBQuickMatchBattingOrderMsg(const Core::CPUThreadGuard& guard, MSBQuickMatchGameState& state);
 void DisplayPlayerNames(const Core::CPUThreadGuard& guard);
 void SetAvgPing(const Core::CPUThreadGuard& guard);
 void SetNetplayerUserInfo();
@@ -264,9 +264,7 @@ bool isNetplay();
 std::optional<std::vector<std::string>> GetTagSetGeckoString();
 bool GameSupportsTagSets();
 
-// Helper function for the Gecko loader expansion
-std::optional<std::pair<u32,u32>> getGameFreeMemory();
-
+static const u32 aRelState = 0x800E877C;
 static const u32 aOpponentPort = 0x802EBF92;
 static const u32 aFielderPort = 0x802EBF94;
 static const u32 aBatterPort = 0x802EBF95;
