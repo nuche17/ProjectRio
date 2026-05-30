@@ -9,7 +9,7 @@
 #include <picojson.h>
 
 
-bool LoadStateFromHud(const std::string& path, MSBQuickMatchGameState& outState,
+bool LoadStateFromHud(const std::string& path, MSB_QuickMatchState& outState,
                       const std::string& p1Username, const std::string& p2Username)
 {
     std::ifstream file(path);
@@ -96,16 +96,18 @@ bool LoadStateFromHud(const std::string& path, MSBQuickMatchGameState& outState,
     INFO_LOG_FMT(COMMON, "Starting parsing HUD to fill out state");
 
 
-    MSBQuickMatchGameState state;
+    MSB_QuickMatchState state;
+    state.SetP1IsAway(p1IsAway);
+
+    // Captain fielding positions — resolved to batting slots in the batting order section below.
+    std::optional<uint8_t> captainFieldingPosP1;
+    std::optional<uint8_t> captainFieldingPosP2;
 
     // === PRE-GAME SETTINGS ===
     // === ROSTERS ===
-    // Characters are stored in roster order in the HUD file, but your state
+    // Characters are stored in roster order in the HUD file, but the state
     // needs them in position order (P, C, 1B, 2B, 3B, SS, LF, CF, RF).
     // The "Fielding Position" field tells us what position each roster slot plays.
-    // Position mapping: 0=P, 1=C, 2=1B, 3=2B, 4=3B, 5=SS, 6=LF, 7=CF, 8=RF
-
-    // If host player is away, away=P1 and home=P2. Otherwise invert.
 
     for (int i = 0; i < 9; i++)
     {
@@ -121,17 +123,16 @@ bool LoadStateFromHud(const std::string& path, MSBQuickMatchGameState& outState,
             uint8_t position = static_cast<uint8_t>(roster.at("Fielding Position").get<double>());
             if (position < 9)
             {
-                state.charactersP1ByPosition[position] = charID;
-                state.battingHandP1ByPosition[position] = static_cast<uint8_t>(roster.at("Batting Hand").get<double>());
-                state.fieldingHandP1ByPosition[position] = static_cast<uint8_t>(roster.at("Fielding Hand").get<double>());
-                state.superstarP1ByPosition[position] = static_cast<uint8_t>(roster.at("Superstar").get<double>());
+                MSB_Player p;
+                p.charID       = charID;
+                p.battingHand  = static_cast<uint8_t>(roster.at("Batting Hand").get<double>());
+                p.fieldingHand = static_cast<uint8_t>(roster.at("Fielding Hand").get<double>());
+                p.superstar    = static_cast<uint8_t>(roster.at("Superstar").get<double>());
+                state.GetP1().SetPlayer(position, p);
             }
 
             if (roster.count("Captain") && roster.at("Captain").get<double>() == 1)
-            {
-                state.captainCharacterP1 = charID;
-                state.captainPositionP1 = position;
-            }
+                captainFieldingPosP1 = position;
         }
 
         if (j.count(p2Key))
@@ -141,56 +142,55 @@ bool LoadStateFromHud(const std::string& path, MSBQuickMatchGameState& outState,
             uint8_t position = static_cast<uint8_t>(roster.at("Fielding Position").get<double>());
             if (position < 9)
             {
-                state.charactersP2ByPosition[position] = charID;
-                state.battingHandP2ByPosition[position] = static_cast<uint8_t>(roster.at("Batting Hand").get<double>());
-                state.fieldingHandP2ByPosition[position] = static_cast<uint8_t>(roster.at("Fielding Hand").get<double>());
-                state.superstarP2ByPosition[position] = static_cast<uint8_t>(roster.at("Superstar").get<double>());
+                MSB_Player p;
+                p.charID       = charID;
+                p.battingHand  = static_cast<uint8_t>(roster.at("Batting Hand").get<double>());
+                p.fieldingHand = static_cast<uint8_t>(roster.at("Fielding Hand").get<double>());
+                p.superstar    = static_cast<uint8_t>(roster.at("Superstar").get<double>());
+                state.GetP2().SetPlayer(position, p);
             }
 
             if (roster.count("Captain") && roster.at("Captain").get<double>() == 1)
-            {
-                state.captainCharacterP2 = charID;
-                state.captainPositionP2 = position;
-            }
+                captainFieldingPosP2 = position;
         }
     }
     for (int i = 0; i < 9; i++)
     {
-        INFO_LOG_FMT(
-            COMMON,
+        const MSB_Player* p = state.GetP1().GetPlayer(static_cast<uint8_t>(i));
+        INFO_LOG_FMT(COMMON,
             "P1 Position {}: CharID {}, Batting Hand {}, Fielding Hand {}, Superstar {}",
             i,
-            state.charactersP1ByPosition[i].has_value() ? std::to_string(state.charactersP1ByPosition[i].value()) : "not set",
-            state.battingHandP1ByPosition[i].has_value() ? std::to_string(state.battingHandP1ByPosition[i].value()) : "not set",
-            state.fieldingHandP1ByPosition[i].has_value() ? std::to_string(state.fieldingHandP1ByPosition[i].value()) : "not set",
-            state.superstarP1ByPosition[i].has_value() ? std::to_string(state.superstarP1ByPosition[i].value()) : "not set");
+            p && p->charID.has_value()       ? std::to_string(p->charID.value())       : "not set",
+            p && p->battingHand.has_value()  ? std::to_string(p->battingHand.value())  : "not set",
+            p && p->fieldingHand.has_value() ? std::to_string(p->fieldingHand.value()) : "not set",
+            p && p->superstar.has_value()    ? std::to_string(p->superstar.value())    : "not set");
     }
     for (int i = 0; i < 9; i++)
     {
-        INFO_LOG_FMT(
-            COMMON,
+        const MSB_Player* p = state.GetP2().GetPlayer(static_cast<uint8_t>(i));
+        INFO_LOG_FMT(COMMON,
             "P2 Position {}: CharID {}, Batting Hand {}, Fielding Hand {}, Superstar {}",
             i,
-            state.charactersP2ByPosition[i].has_value() ? std::to_string(state.charactersP2ByPosition[i].value()) : "not set",
-            state.battingHandP2ByPosition[i].has_value() ? std::to_string(state.battingHandP2ByPosition[i].value()) : "not set",
-            state.fieldingHandP2ByPosition[i].has_value() ? std::to_string(state.fieldingHandP2ByPosition[i].value()) : "not set",
-            state.superstarP2ByPosition[i].has_value() ? std::to_string(state.superstarP2ByPosition[i].value()) : "not set");
+            p && p->charID.has_value()       ? std::to_string(p->charID.value())       : "not set",
+            p && p->battingHand.has_value()  ? std::to_string(p->battingHand.value())  : "not set",
+            p && p->fieldingHand.has_value() ? std::to_string(p->fieldingHand.value()) : "not set",
+            p && p->superstar.has_value()    ? std::to_string(p->superstar.value())    : "not set");
     }
-    INFO_LOG_FMT(COMMON, "Captain P1: {}, Position: {}", 
-        state.captainCharacterP1.has_value() ? std::to_string(state.captainCharacterP1.value()) : "not set", 
-        state.captainPositionP1.has_value() ? std::to_string(state.captainPositionP1.value()) : "not set");
-    INFO_LOG_FMT(COMMON, "Captain P2: {}, Position: {}", 
-        state.captainCharacterP2.has_value() ? std::to_string(state.captainCharacterP2.value()) : "not set", 
-        state.captainPositionP2.has_value() ? std::to_string(state.captainPositionP2.value()) : "not set");
+    INFO_LOG_FMT(COMMON, "Captain P1 fielding pos: {}",
+        captainFieldingPosP1.has_value() ? std::to_string(captainFieldingPosP1.value()) : "not set");
+    INFO_LOG_FMT(COMMON, "Captain P2 fielding pos: {}",
+        captainFieldingPosP2.has_value() ? std::to_string(captainFieldingPosP2.value()) : "not set");
 
 
     if (j.count("Away Logo") && j.count("Home Logo"))
     {
-        state.logoAway = static_cast<uint32_t>(j.at("Away Logo").get<double>());
-        state.logoHome = static_cast<uint32_t>(j.at("Home Logo").get<double>());
+        uint32_t awayLogo = static_cast<uint32_t>(j.at("Away Logo").get<double>());
+        uint32_t homeLogo = static_cast<uint32_t>(j.at("Home Logo").get<double>());
+        (p1IsAway ? state.GetP1() : state.GetP2()).SetLogo(awayLogo);
+        (p1IsAway ? state.GetP2() : state.GetP1()).SetLogo(homeLogo);
     }
-    INFO_LOG_FMT(COMMON, "Logo Away: {}", state.logoAway.has_value() ? std::to_string(state.logoAway.value()) : "not set");
-    INFO_LOG_FMT(COMMON, "Logo Home: {}", state.logoHome.has_value() ? std::to_string(state.logoHome.value()) : "not set");
+    INFO_LOG_FMT(COMMON, "Logo Away: {}", (p1IsAway ? state.GetP1() : state.GetP2()).GetLogo().has_value() ? std::to_string((p1IsAway ? state.GetP1() : state.GetP2()).GetLogo().value()) : "not set");
+    INFO_LOG_FMT(COMMON, "Logo Home: {}", (p1IsAway ? state.GetP2() : state.GetP1()).GetLogo().has_value() ? std::to_string((p1IsAway ? state.GetP2() : state.GetP1()).GetLogo().value()) : "not set");
 
     if (j.count("StadiumID"))
     {
@@ -202,134 +202,120 @@ bool LoadStateFromHud(const std::string& path, MSBQuickMatchGameState& outState,
         else if (stadiumID == 5) stadiumIndex = 4; // DK Jungle
         else stadiumIndex = stadiumID; // Rest match directly.
 
-        state.stadium = stadiumIndex;
+        state.SetStadium(stadiumIndex);
     }
-    INFO_LOG_FMT(COMMON, "Stadium: {}", state.stadium.has_value() ? std::to_string(state.stadium.value()) : "not set");
+    INFO_LOG_FMT(COMMON, "Stadium: {}", state.GetStadium().has_value() ? std::to_string(state.GetStadium().value()) : "not set");
 
     // handled with half inning value since the game uses this to load offence/defence, not home or away.
     // if (j.count("First Batting Team"))
     // {
     //     uint8_t firstBattingTeam = static_cast<uint8_t>(j.at("First Batting Team").get<double>()); // 0=Original P1, 1=Original P2
     //     if (p1IsAway)
-    //         state.firstBatter = firstBattingTeam;
+    //         state.SetFirstBatter(firstBattingTeam);
     //     else
-    //         state.firstBatter = (firstBattingTeam == 0) ? 1 : 0;
+    //         state.SetFirstBatter((firstBattingTeam == 0) ? 1 : 0);
     // }
-    // INFO_LOG_FMT(COMMON, "First Batter: {}", state.firstBatter.has_value() ? std::to_string(state.firstBatter.value()) : "not set");
+    // INFO_LOG_FMT(COMMON, "First Batter: {}", state.GetFirstBatter().has_value() ? std::to_string(state.GetFirstBatter().value()) : "not set");
 
     if (j.count("Star Skills On"))
-        state.starSkills = static_cast<uint8_t>(j.at("Star Skills On").get<double>());
-    INFO_LOG_FMT(COMMON, "Star Skills: {}", state.starSkills.has_value() ? std::to_string(state.starSkills.value()) : "not set");
+        state.SetStarSkills(static_cast<uint8_t>(j.at("Star Skills On").get<double>()));
+    INFO_LOG_FMT(COMMON, "Star Skills: {}", state.GetStarSkills().has_value() ? std::to_string(state.GetStarSkills().value()) : "not set");
 
     if (j.count("Innings Selected"))
-        state.inningsSelected = static_cast<uint8_t>(j.at("Innings Selected").get<double>());
-    INFO_LOG_FMT(COMMON, "Innings Selected: {}", state.inningsSelected.has_value() ? std::to_string(state.inningsSelected.value()) : "not set");
+        state.SetInningsSelected(static_cast<uint8_t>(j.at("Innings Selected").get<double>()));
+    INFO_LOG_FMT(COMMON, "Innings Selected: {}", state.GetInningsSelected().has_value() ? std::to_string(state.GetInningsSelected().value()) : "not set");
 
     if (j.count("Mercy On"))
-        state.mercy = static_cast<uint8_t>(j.at("Mercy On").get<double>());
-    INFO_LOG_FMT(COMMON, "Mercy: {}", state.mercy.has_value() ? std::to_string(state.mercy.value()) : "not set");
+        state.SetMercy(static_cast<uint8_t>(j.at("Mercy On").get<double>()));
+    INFO_LOG_FMT(COMMON, "Mercy: {}", state.GetMercy().has_value() ? std::to_string(state.GetMercy().value()) : "not set");
 
     // === IN-GAME STATE ===
 
     if (j.count("Inning"))
-        state.inning = static_cast<uint32_t>(j.at("Inning").get<double>());
-    INFO_LOG_FMT(COMMON, "Inning: {}", state.inning.has_value() ? std::to_string(state.inning.value()) : "not set");
+        state.SetInning(static_cast<uint32_t>(j.at("Inning").get<double>()));
+    INFO_LOG_FMT(COMMON, "Inning: {}", state.GetInning().has_value() ? std::to_string(state.GetInning().value()) : "not set");
 
     if (j.count("Half Inning"))
     {
         uint8_t halfInning = static_cast<uint8_t>(j.at("Half Inning").get<double>());
 
-        state.halfInning = halfInning;
+        state.SetHalfInning(halfInning);
+        state.SetBattingTeam(static_cast<uint32_t>(halfInning));
+        state.SetFieldingTeam(static_cast<uint32_t>(1 - halfInning));
 
-        state.battingTeam = static_cast<uint32_t>(halfInning);
-        state.fieldingTeam = static_cast<uint32_t>(1 - halfInning);
-
-        if (p1IsAway) state.firstBatter = halfInning;
-        else state.firstBatter = 1 - halfInning;
+        if (p1IsAway) state.SetFirstBatter(halfInning);
+        else state.SetFirstBatter(1 - halfInning);
     }
-    INFO_LOG_FMT(COMMON, "Half Inning: {}", state.halfInning.has_value() ? std::to_string(state.halfInning.value()) : "not set");
-    INFO_LOG_FMT(COMMON, "Batting Team: {}", state.battingTeam.has_value() ? std::to_string(state.battingTeam.value()) : "not set");
-    INFO_LOG_FMT(COMMON, "Fielding Team: {}", state.fieldingTeam.has_value() ? std::to_string(state.fieldingTeam.value()) : "not set");
-    INFO_LOG_FMT(COMMON, "First Batter: {}", state.firstBatter.has_value() ? std::to_string(state.firstBatter.value()) : "not set");
+    INFO_LOG_FMT(COMMON, "Half Inning: {}", state.GetHalfInning().has_value() ? std::to_string(state.GetHalfInning().value()) : "not set");
+    INFO_LOG_FMT(COMMON, "Batting Team: {}", state.GetBattingTeam().has_value() ? std::to_string(state.GetBattingTeam().value()) : "not set");
+    INFO_LOG_FMT(COMMON, "Fielding Team: {}", state.GetFieldingTeam().has_value() ? std::to_string(state.GetFieldingTeam().value()) : "not set");
+    INFO_LOG_FMT(COMMON, "First Batter: {}", state.GetFirstBatter().has_value() ? std::to_string(state.GetFirstBatter().value()) : "not set");
 
     if (j.count("Away Score"))
-        state.awayScore = static_cast<uint16_t>(j.at("Away Score").get<double>());
-    INFO_LOG_FMT(COMMON, "Away Score: {}", state.awayScore.has_value() ? std::to_string(state.awayScore.value()) : "not set");
+        state.SetAwayScore(static_cast<uint16_t>(j.at("Away Score").get<double>()));
+    INFO_LOG_FMT(COMMON, "Away Score: {}", state.GetAwayScore().has_value() ? std::to_string(state.GetAwayScore().value()) : "not set");
 
     if (j.count("Home Score"))
-        state.homeScore = static_cast<uint16_t>(j.at("Home Score").get<double>());
-    INFO_LOG_FMT(COMMON, "Home Score: {}", state.homeScore.has_value() ? std::to_string(state.homeScore.value()) : "not set");
+        state.SetHomeScore(static_cast<uint16_t>(j.at("Home Score").get<double>()));
+    INFO_LOG_FMT(COMMON, "Home Score: {}", state.GetHomeScore().has_value() ? std::to_string(state.GetHomeScore().value()) : "not set");
 
     if (j.count("Away Inning Scores"))
     {
         const picojson::array& scores = j.at("Away Inning Scores").get<picojson::array>();
         for (int i = 0; i < static_cast<int>(scores.size()) && i < 18; i++)
-            state.awayInningScores[i] = static_cast<uint16_t>(scores[i].get<double>());
+            state.SetAwayInningScore(i, static_cast<uint16_t>(scores[i].get<double>()));
     }
 
     if (j.count("Home Inning Scores"))
     {
         const picojson::array& scores = j.at("Home Inning Scores").get<picojson::array>();
         for (int i = 0; i < static_cast<int>(scores.size()) && i < 18; i++)
-            state.homeInningScores[i] = static_cast<uint16_t>(scores[i].get<double>());
+            state.SetHomeInningScore(i, static_cast<uint16_t>(scores[i].get<double>()));
     }
     for (int i = 0; i < 18; i++)
     {
-        if (state.awayInningScores[i].has_value())
-            INFO_LOG_FMT(COMMON, "Away Inning {} Score: {}", i, state.awayInningScores[i].value());
-        if (state.homeInningScores[i].has_value())
-            INFO_LOG_FMT(COMMON, "Home Inning {} Score: {}", i, state.homeInningScores[i].value());
+        if (state.GetAwayInningScore(i).has_value())
+            INFO_LOG_FMT(COMMON, "Away Inning {} Score: {}", i, state.GetAwayInningScore(i).value());
+        if (state.GetHomeInningScore(i).has_value())
+            INFO_LOG_FMT(COMMON, "Home Inning {} Score: {}", i, state.GetHomeInningScore(i).value());
     }
 
     if (j.count("Strikes"))
-        state.strikes = static_cast<uint32_t>(j.at("Strikes").get<double>());
-    INFO_LOG_FMT(COMMON, "Strikes: {}", state.strikes.has_value() ? std::to_string(state.strikes.value()) : "not set");
+        state.SetStrikes(static_cast<uint32_t>(j.at("Strikes").get<double>()));
+    INFO_LOG_FMT(COMMON, "Strikes: {}", state.GetStrikes().has_value() ? std::to_string(state.GetStrikes().value()) : "not set");
 
     if (j.count("Balls"))
-        state.balls = static_cast<uint32_t>(j.at("Balls").get<double>());
-    INFO_LOG_FMT(COMMON, "Balls: {}", state.balls.has_value() ? std::to_string(state.balls.value()) : "not set");
+        state.SetBalls(static_cast<uint32_t>(j.at("Balls").get<double>()));
+    INFO_LOG_FMT(COMMON, "Balls: {}", state.GetBalls().has_value() ? std::to_string(state.GetBalls().value()) : "not set");
 
     if (j.count("Outs"))
-        state.outs = static_cast<uint32_t>(j.at("Outs").get<double>());
-    INFO_LOG_FMT(COMMON, "Outs: {}", state.outs.has_value() ? std::to_string(state.outs.value()) : "not set");
+        state.SetOuts(static_cast<uint32_t>(j.at("Outs").get<double>()));
+    INFO_LOG_FMT(COMMON, "Outs: {}", state.GetOuts().has_value() ? std::to_string(state.GetOuts().value()) : "not set");
 
     if (j.count("Away Stars"))
-    {
-        uint8_t awayStars = static_cast<uint8_t>(j.at("Away Stars").get<double>());
-        if (p1IsAway)
-            state.p1TeamStars = awayStars;
-        else
-            state.p2TeamStars = awayStars;
-    }
-    INFO_LOG_FMT(COMMON, "Away Stars assigned to P{}: {}", 
-        p1IsAway ? 
-            (state.p1TeamStars.has_value() ? std::to_string(state.p1TeamStars.value()) : "not set") : 
-            (state.p2TeamStars.has_value() ? std::to_string(state.p2TeamStars.value()) : "not set"),
-        p1IsAway ? "1" : "2");
+        (p1IsAway ? state.GetP1() : state.GetP2()).SetTeamStars(static_cast<uint8_t>(j.at("Away Stars").get<double>()));
+    INFO_LOG_FMT(COMMON, "Away Stars (P{}): {}", p1IsAway ? "1" : "2",
+        (p1IsAway ? state.GetP1() : state.GetP2()).GetTeamStars().has_value() ?
+            std::to_string((p1IsAway ? state.GetP1() : state.GetP2()).GetTeamStars().value()) : "not set");
 
     if (j.count("Home Stars"))
-    {
-        uint8_t homeStars = static_cast<uint8_t>(j.at("Home Stars").get<double>());
-        if (p1IsAway)
-            state.p2TeamStars = homeStars;
-        else
-            state.p1TeamStars = homeStars;
-    }
-    INFO_LOG_FMT(COMMON, "Home Stars assigned to P{}: {}", 
-        p1IsAway ? 
-            (state.p2TeamStars.has_value() ? std::to_string(state.p2TeamStars.value()) : "not set") : 
-            (state.p1TeamStars.has_value() ? std::to_string(state.p1TeamStars.value()) : "not set"),
-        p1IsAway ? "2" : "1");
+        (p1IsAway ? state.GetP2() : state.GetP1()).SetTeamStars(static_cast<uint8_t>(j.at("Home Stars").get<double>()));
+    INFO_LOG_FMT(COMMON, "Home Stars (P{}): {}", p1IsAway ? "2" : "1",
+        (p1IsAway ? state.GetP2() : state.GetP1()).GetTeamStars().has_value() ?
+            std::to_string((p1IsAway ? state.GetP2() : state.GetP1()).GetTeamStars().value()) : "not set");
 
     if (j.count("Star Chance"))
-        state.isStarChance = static_cast<uint8_t>(j.at("Star Chance").get<double>());
-    INFO_LOG_FMT(COMMON, "Star Chance: {}", state.isStarChance.has_value() ? std::to_string(state.isStarChance.value()) : "not set");
+        state.SetIsStarChance(static_cast<uint8_t>(j.at("Star Chance").get<double>()));
+    INFO_LOG_FMT(COMMON, "Star Chance: {}", state.GetIsStarChance().has_value() ? std::to_string(state.GetIsStarChance().value()) : "not set");
 
     // === POSITIONS BY BATTING ORDER ===
     if (j.count("Away Batter Roster Loc") && j.count("Home Batter Roster Loc"))
     {
         int awayStartingBatter = static_cast<int>(j.at("Away Batter Roster Loc").get<double>());
         int homeStartingBatter = static_cast<int>(j.at("Home Batter Roster Loc").get<double>());
+
+        MSB_Team& awayTeam = p1IsAway ? state.GetP1() : state.GetP2();
+        MSB_Team& homeTeam = p1IsAway ? state.GetP2() : state.GetP1();
 
         for (int i = 0; i < 9; i++)
         {
@@ -339,31 +325,65 @@ bool LoadStateFromHud(const std::string& path, MSBQuickMatchGameState& outState,
             if (j.count(awayKey))
             {
                 const picojson::object& roster = j.at(awayKey).get<picojson::object>();
-                uint32_t position = static_cast<uint32_t>(roster.at("Fielding Position").get<double>());
+                uint8_t position = static_cast<uint8_t>(roster.at("Fielding Position").get<double>());
                 if (position < 9)
-                    state.awayPositionByBattingOrder[i] = position;
+                {
+                    const MSB_Player* existing = awayTeam.GetPlayer(position);
+                    if (existing)
+                    {
+                        MSB_Player updated = *existing;
+                        updated.battingOrderSlot = static_cast<uint8_t>(i);
+                        awayTeam.SetPlayer(position, updated);
+                    }
+                }
             }
 
             if (j.count(homeKey))
             {
                 const picojson::object& roster = j.at(homeKey).get<picojson::object>();
-                uint32_t position = static_cast<uint32_t>(roster.at("Fielding Position").get<double>());
+                uint8_t position = static_cast<uint8_t>(roster.at("Fielding Position").get<double>());
                 if (position < 9)
-                    state.homePositionByBattingOrder[i] = position;
+                {
+                    const MSB_Player* existing = homeTeam.GetPlayer(position);
+                    if (existing)
+                    {
+                        MSB_Player updated = *existing;
+                        updated.battingOrderSlot = static_cast<uint8_t>(i);
+                        homeTeam.SetPlayer(position, updated);
+                    }
+                }
             }
+        }
+
+        // Resolve captain batting slots now that batting order slots are set.
+        if (captainFieldingPosP1.has_value())
+        {
+            const MSB_Player* captain = state.GetP1().GetPlayer(captainFieldingPosP1.value());
+            if (captain && captain->battingOrderSlot.has_value())
+                state.GetP1().SetCaptainBattingSlot(captain->battingOrderSlot.value());
+        }
+        if (captainFieldingPosP2.has_value())
+        {
+            const MSB_Player* captain = state.GetP2().GetPlayer(captainFieldingPosP2.value());
+            if (captain && captain->battingOrderSlot.has_value())
+                state.GetP2().SetCaptainBattingSlot(captain->battingOrderSlot.value());
         }
     }
     for (int i = 0; i < 9; i++)
     {
-        if (state.awayPositionByBattingOrder[i].has_value())
-            INFO_LOG_FMT(COMMON, "Away Batting Order {}: Position {}", i, state.awayPositionByBattingOrder[i].value());
-        if (state.homePositionByBattingOrder[i].has_value())
-            INFO_LOG_FMT(COMMON, "Home Batting Order {}: Position {}", i, state.homePositionByBattingOrder[i].value());
+        const MSB_Team& awayTeam = p1IsAway ? state.GetP1() : state.GetP2();
+        const MSB_Team& homeTeam = p1IsAway ? state.GetP2() : state.GetP1();
+        const MSB_Player* awayP = awayTeam.GetPlayerByBattingSlot(static_cast<uint8_t>(i));
+        const MSB_Player* homeP = homeTeam.GetPlayerByBattingSlot(static_cast<uint8_t>(i));
+        if (awayP && awayP->position.has_value())
+            INFO_LOG_FMT(COMMON, "Away Batting Order {}: Position {}", i, awayP->position.value());
+        if (homeP && homeP->position.has_value())
+            INFO_LOG_FMT(COMMON, "Home Batting Order {}: Position {}", i, homeP->position.value());
     }
 
     // === RUNNERS ===
     // Runners are indexed 1-3 for each base (1B, 2B, 3B)
-    // runnerRosterSpot and runnerCharacterID are 0-indexed arrays (0=1B, 1=2B, 2=3B)
+    // SetRunner derives fielding position and charID from the batting team via batting slot.
 
     const std::string runnerKeys[3] = {"Runner 1B", "Runner 2B", "Runner 3B"};
 
@@ -374,28 +394,30 @@ bool LoadStateFromHud(const std::string& path, MSBQuickMatchGameState& outState,
         {
             const picojson::object& runner = j.at(key).get<picojson::object>();
 
-            if (runner.count("Runner Roster Loc"))
+            if (runner.count("Runner Roster Loc") && j.count("Batter Roster Loc"))
             {
-                uint16_t batterRosterLoc = static_cast<uint16_t>(j.at("Batter Roster Loc").get<double>()); // 1
-                uint16_t runnerRosterLocRaw = static_cast<uint16_t>(runner.at("Runner Roster Loc").get<double>()); // 0
-                state.runnerRosterSpot[i] = (runnerRosterLocRaw - batterRosterLoc + 9) % 9;
+                uint8_t batterRosterLoc    = static_cast<uint8_t>(j.at("Batter Roster Loc").get<double>());
+                uint8_t runnerRosterLocRaw = static_cast<uint8_t>(runner.at("Runner Roster Loc").get<double>());
+                uint8_t battingSlot        = static_cast<uint8_t>((runnerRosterLocRaw - batterRosterLoc + 9) % 9);
+                state.SetRunner(i, battingSlot);
             }
 
             if (runner.count("Runner Char Id"))
-                state.runnerCharacterID[i] = static_cast<uint16_t>(runner.at("Runner Char Id").get<double>());
+                INFO_LOG_FMT(COMMON, "Runner {} Char Id (HUD): {}", key,
+                    static_cast<uint16_t>(runner.at("Runner Char Id").get<double>()));
         }
     }
     for (int i = 0; i < 3; i++)
     {
         INFO_LOG_FMT(COMMON, "Runner {}: RosterSpot={}, CharID={}",
                     runnerKeys[i],
-                    state.runnerRosterSpot[i].has_value() ? std::to_string(state.runnerRosterSpot[i].value()) : "not set",
-                    state.runnerCharacterID[i].has_value() ? std::to_string(state.runnerCharacterID[i].value()) : "not set");
+                    state.GetRunnerFieldingPosition(i).has_value() ? std::to_string(state.GetRunnerFieldingPosition(i).value()) : "not set",
+                    state.GetRunnerCharacterID(i).has_value() ? std::to_string(state.GetRunnerCharacterID(i).value()) : "not set");
     }
 
     // === STAMINA ===
     // Stamina is stored per-character in defensive stats.
-    // Your state expects it on a P1/P2 basis by roster ID.
+    // Stamina lives on MSB_Player::pitcherStamina, indexed by batting slot.
 
     if (j.count("Away Batter Roster Loc") && j.count("Home Batter Roster Loc"))
     {
@@ -417,7 +439,15 @@ bool LoadStateFromHud(const std::string& path, MSBQuickMatchGameState& outState,
                 const picojson::object& roster = j.at(p1Key).get<picojson::object>();
                 const picojson::object& defensiveStats = roster.at("Defensive Stats").get<picojson::object>();
                 if (defensiveStats.count("Stamina"))
-                    state.pitcherStaminaP1[i] = static_cast<uint16_t>(defensiveStats.at("Stamina").get<double>());
+                {
+                    const MSB_Player* existing = state.GetP1().GetPlayerByBattingSlot(static_cast<uint8_t>(i));
+                    if (existing && existing->position.has_value())
+                    {
+                        MSB_Player updated = *existing;
+                        updated.pitcherStamina = static_cast<uint16_t>(defensiveStats.at("Stamina").get<double>());
+                        state.GetP1().SetPlayer(existing->position.value(), updated);
+                    }
+                }
             }
 
             if (j.count(p2Key))
@@ -425,16 +455,26 @@ bool LoadStateFromHud(const std::string& path, MSBQuickMatchGameState& outState,
                 const picojson::object& roster = j.at(p2Key).get<picojson::object>();
                 const picojson::object& defensiveStats = roster.at("Defensive Stats").get<picojson::object>();
                 if (defensiveStats.count("Stamina"))
-                    state.pitcherStaminaP2[i] = static_cast<uint16_t>(defensiveStats.at("Stamina").get<double>());
+                {
+                    const MSB_Player* existing = state.GetP2().GetPlayerByBattingSlot(static_cast<uint8_t>(i));
+                    if (existing && existing->position.has_value())
+                    {
+                        MSB_Player updated = *existing;
+                        updated.pitcherStamina = static_cast<uint16_t>(defensiveStats.at("Stamina").get<double>());
+                        state.GetP2().SetPlayer(existing->position.value(), updated);
+                    }
+                }
             }
         }
     }
     for (int i = 0; i < 9; i++)
     {
-        if (state.pitcherStaminaP1[i].has_value())
-            INFO_LOG_FMT(COMMON, "P1 Stamina Roster {}: {}", i, state.pitcherStaminaP1[i].value());
-        if (state.pitcherStaminaP2[i].has_value())
-            INFO_LOG_FMT(COMMON, "P2 Stamina Roster {}: {}", i, state.pitcherStaminaP2[i].value());
+        const MSB_Player* p1 = state.GetP1().GetPlayerByBattingSlot(static_cast<uint8_t>(i));
+        const MSB_Player* p2 = state.GetP2().GetPlayerByBattingSlot(static_cast<uint8_t>(i));
+        if (p1 && p1->pitcherStamina.has_value())
+            INFO_LOG_FMT(COMMON, "P1 Stamina Batting Slot {}: {}", i, p1->pitcherStamina.value());
+        if (p2 && p2->pitcherStamina.has_value())
+            INFO_LOG_FMT(COMMON, "P2 Stamina Batting Slot {}: {}", i, p2->pitcherStamina.value());
     }
 
     // === DEBUG LOGGING OF LOADED STATE ===

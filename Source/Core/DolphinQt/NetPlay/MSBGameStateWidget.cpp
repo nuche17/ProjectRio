@@ -395,6 +395,10 @@ void MSBGameStateWidget::ConnectWidgets()
     }
   });
 
+  connect(m_load_hud_btn, &QPushButton::clicked, this, [this] {
+    emit LoadFromHUDRequested();
+  });
+
   connect(m_apply_btn, &QPushButton::clicked, this, [this] {
     m_state_dirty = false;
     emit ApplyRequested(BuildState());

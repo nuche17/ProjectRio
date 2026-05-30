@@ -45,7 +45,10 @@
 #endif
 #include "Core/IOS/FS/FileSystem.h"
 #include "Core/GeckoCodeConfig.h"
+#include "Core/MSB_HUDStateLoader.h"
 #include "Core/NetPlayServer.h"
+#include "Common/FileUtil.h"
+#include "Common/StringUtil.h"
 #include "Core/SyncIdentifier.h"
 
 #include "DolphinQt/NetPlay/ChunkedProgressDialog.h"
@@ -159,7 +162,6 @@ void NetPlayDialog::CreateMainLayout()
   m_menu_bar = new QMenuBar(this);
   m_night_stadium = new QCheckBox(tr("Night Mario Stadium"));
   m_disable_replays = new QCheckBox(tr("Disable Replays"));
-  m_fast_reset_from_HUD = new QCheckBox(tr("Fast Reset"));
   m_spectator_toggle = new QCheckBox(tr("Spectator"));
 
   m_data_menu = m_menu_bar->addMenu(tr("Data"));
@@ -313,8 +315,7 @@ void NetPlayDialog::CreateMainLayout()
   //options_widget->addWidget(m_coin_flipper, 0, 3, Qt::AlignVCenter);
   options_widget->addWidget(m_night_stadium, 0, 3, Qt::AlignVCenter);
   options_widget->addWidget(m_disable_replays, 0, 4, Qt::AlignVCenter);
-  options_widget->addWidget(m_fast_reset_from_HUD, 0, 5, Qt::AlignVCenter);
-  options_widget->addWidget(m_spectator_toggle, 0, 6, Qt::AlignVCenter | Qt::AlignRight);
+  options_widget->addWidget(m_spectator_toggle, 0, 5, Qt::AlignVCenter | Qt::AlignRight);
 
   m_main_layout->addLayout(options_widget, 2, 0, 1, -1, Qt::AlignRight);
   m_main_layout->setRowStretch(1, 1000);
@@ -457,13 +458,44 @@ void NetPlayDialog::ConnectWidgets()
       client->SendDisableReplays(disable);
   });
 
-  connect(m_fast_reset_from_HUD, &QCheckBox::stateChanged, [this](bool load_from_hud) {
+  connect(m_game_state_widget, &MSBGameStateWidget::LoadFromHUDRequested, this, [this] {
     auto client = Settings::Instance().GetNetPlayClient();
-    auto server = Settings::Instance().GetNetPlayServer();
-    if (server)
-      server->AdjustFastResetFromHUD(load_from_hud);
+    if (!client) return;
+
+    const auto padMap = client->GetPadMapping();
+    const auto players = client->GetPlayers();
+
+    std::string p1Username, p2Username;
+    for (const auto* player : players)
+      if (player->pid == padMap[0]) { p1Username = std::string(StripWhitespace(player->name)); break; }
+    for (int i = 1; i < 4; i++)
+    {
+      if (padMap[i] == 0) continue;
+      for (const auto* player : players)
+        if (player->pid == padMap[i]) { p2Username = std::string(StripWhitespace(player->name)); break; }
+      if (!p2Username.empty()) break;
+    }
+
+    const std::string hudPath = File::GetUserPath(D_HUDFILES_IDX) + "hud.json";
+    const int resultCode = allowLoadFromHUD(hudPath, p1Username, p2Username);
+
+    if (resultCode == 0)
+    {
+      MSB_QuickMatchState state;
+      if (LoadStateFromHud(hudPath, state, p1Username, p2Username))
+      {
+        m_game_state_widget->PopulateFromState(state);
+        OnHUDLoadResult(0);
+      }
+      else
+      {
+        OnHUDLoadResult(2);
+      }
+    }
     else
-      client->SendFastResetFromHUD(load_from_hud);
+    {
+      OnHUDLoadResult(resultCode);
+    }
   });
 
   connect(m_spectator_toggle, &QCheckBox::stateChanged, this, &NetPlayDialog::OnSpectatorToggle);
@@ -690,23 +722,18 @@ void NetPlayDialog::OnDisableReplaysResult(bool disable)
     DisplayMessage(tr("Replays Enabled"), "steelblue");
 }
 
-void NetPlayDialog::OnFastResetFromHUDResult(int load_from_hud_result_code)
+void NetPlayDialog::OnHUDLoadResult(int result_code)
 {
-  if (load_from_hud_result_code == 0)
-    DisplayMessage(tr("Fast Reset From Latest Game State Enabled"), "steelblue");
-  else if (load_from_hud_result_code == 1)
-    DisplayMessage(tr("Fast Reset From Latest Game State Disabled"), "coral");
-  else if (load_from_hud_result_code == 2)
-    DisplayMessage(tr("Cannot Enable Fast Reset: HUD File Not Found Or Couldn't Be Parsed"), "coral");
-  else if (load_from_hud_result_code == 3)
-    DisplayMessage(tr("Cannot Enable Fast Reset: Lobby Gamemode Doesn't Match HUD"), "coral");
-  else if (load_from_hud_result_code == 4)
-    DisplayMessage(tr("Cannot Enable Fast Reset: Players Don't Match HUD"), "coral");
+  if (result_code == 0)
+    DisplayMessage(tr("HUD State Loaded Into Widget"), "steelblue");
+  else if (result_code == 2)
+    DisplayMessage(tr("Cannot Load HUD State: File Not Found Or Couldn't Be Parsed"), "coral");
+  else if (result_code == 3)
+    DisplayMessage(tr("Cannot Load HUD State: Lobby Gamemode Doesn't Match HUD"), "coral");
+  else if (result_code == 4)
+    DisplayMessage(tr("Cannot Load HUD State: Players Don't Match HUD"), "coral");
   else
-    DisplayMessage(tr("Cannot Enable Fast Reset: Unknown Error"), "coral");
-
-  if (load_from_hud_result_code > 1)
-    m_fast_reset_from_HUD->setChecked(false); // if error enabling, uncheck the box.
+    DisplayMessage(tr("Cannot Load HUD State: Unknown Error"), "coral");
 }
 
 void NetPlayDialog::OnActiveGeckoCodes(std::string codeStr)
@@ -837,9 +864,6 @@ void NetPlayDialog::show(bool use_traversal)
   m_night_stadium->setEnabled(is_hosting);
   m_disable_replays->setHidden(!is_hosting);
   m_disable_replays->setEnabled(is_hosting);
-  m_fast_reset_from_HUD->setHidden(!is_hosting);
-  m_fast_reset_from_HUD->setEnabled(is_hosting);
-
   m_game_state_widget->SetHostMode(is_hosting);
   m_game_state_widget->Clear();
 
@@ -1138,7 +1162,6 @@ void NetPlayDialog::UpdateLobbyLayout()
     {
       m_night_stadium->setVisible(true);
       m_disable_replays->setVisible(true);
-      m_fast_reset_from_HUD->setVisible(true);
     }
     
     m_game_state_widget->setVisible(true);
@@ -1150,7 +1173,6 @@ void NetPlayDialog::UpdateLobbyLayout()
   {
     m_night_stadium->setVisible(false);
     m_disable_replays->setVisible(false);
-    m_fast_reset_from_HUD->setVisible(false);
 
     m_game_state_widget->setVisible(true);  // TODO: restore to false once layout confirmed working
     m_game_state_widget->Clear();
@@ -1197,7 +1219,6 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
     m_fixed_delay_action->setEnabled(enabled);
     m_night_stadium->setEnabled(enabled);
     m_disable_replays->setEnabled(enabled);
-    m_fast_reset_from_HUD->setEnabled(enabled);
     m_game_state_widget->setEnabled(enabled);
     //m_night_stadium_action->setEnabled(enabled);
     //m_disable_music_action->setEnabled(enabled);
@@ -1260,8 +1281,6 @@ void NetPlayDialog::OnMsgStopGame()
     const bool is_hosting = IsHosting();
     m_night_stadium->setEnabled(is_hosting);
     m_disable_replays->setEnabled(is_hosting);
-    m_fast_reset_from_HUD->setEnabled(is_hosting);
-    m_fast_reset_from_HUD->setChecked(false);
     m_spectator_toggle->setEnabled(true);
   });
 }
@@ -1286,10 +1305,6 @@ void NetPlayDialog::OnMsgPowerButton()
 void NetPlayDialog::OnPlayerConnect(const std::string& player)
 {
   DisplayMessage(tr("%1 has joined").arg(QString::fromStdString(player)), "darkcyan");
-
-  // if a new player joins, uncheck the fast reset from HUD box to prevent desyncs.
-  if (m_fast_reset_from_HUD->isVisible() && m_fast_reset_from_HUD->isChecked()) // only reset if visible to avoid errors when not playing MSSB.
-    m_fast_reset_from_HUD->setChecked(false);  
 }
 
 void NetPlayDialog::OnPlayerDisconnect(const std::string& player)

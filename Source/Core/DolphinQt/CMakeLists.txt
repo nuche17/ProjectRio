@@ -288,6 +288,8 @@ add_executable(dolphin-emu
   NetPlay/ChunkedProgressDialog.h
   NetPlay/GameDigestDialog.cpp
   NetPlay/GameDigestDialog.h
+  NetPlay/MSBGameStateWidget.cpp
+  NetPlay/MSBGameStateWidget.h
   NetPlay/GameListDialog.cpp
   NetPlay/GameListDialog.h
   NetPlay/NetPlayBrowser.cpp

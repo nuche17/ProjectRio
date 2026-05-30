@@ -38,6 +38,7 @@ public:
 signals:
   void ApplyRequested(const MSB_QuickMatchState& state);
   void ClearRequested();
+  void LoadFromHUDRequested();
 
 private:
   void CreateLayout();

@@ -81,7 +81,6 @@ public:
   void OnRandomStadiumResult(int stadium);
   void OnNightResult(bool is_night);
   void OnDisableReplaysResult(bool disable);
-  void OnFastResetFromHUDResult(int load_from_hud_result_code) override;
   void OnCourseResult(std::string message);
   void OnActiveGeckoCodes(std::string codeStr);
   bool IsSpectating() override;
@@ -136,6 +135,7 @@ private:
   void SetOptionsEnabled(bool enabled);
 
   void SendMessage(const std::string& message);
+  void OnHUDLoadResult(int result_code);
 
   // Chat
   QGroupBox* m_chat_box;
@@ -191,7 +191,6 @@ private:
   QPushButton* m_random_18;
   QCheckBox* m_night_stadium;
   QCheckBox* m_disable_replays;
-  QCheckBox* m_fast_reset_from_HUD;
   QCheckBox* m_spectator_toggle;
 
   MSBGameStateWidget* m_game_state_widget;

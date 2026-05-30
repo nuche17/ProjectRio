@@ -541,10 +541,6 @@ void NetPlayClient::OnData(sf::Packet& packet)
     OnDisableReplaysMsg(packet);
     break;
 
-  case MessageID::FastResetFromHUD:
-    OnFastResetFromHUDMsg(packet); 
-    break;
-
   case MessageID::Course:
     OnCourseMsg(packet);
     break;
@@ -1662,45 +1658,6 @@ void NetPlayClient::OnDisableReplaysMsg(sf::Packet& packet)
   Gecko::setDisableReplays(disable);
 }
 
-void NetPlayClient::OnFastResetFromHUDMsg(sf::Packet& packet)
-{
-  bool load_from_hud;
-  packet >> load_from_hud;
-
-  if (!load_from_hud)
-  {
-    m_dialog->OnFastResetFromHUDResult(1); // play disable message
-    Gecko::setFastResetFromHUD(false);
-    return;
-  }
-
-  // Resolve player names from the lobby directly so callers don't need the static netplay_client pointer.
-  std::string p1Username = std::string(StripWhitespace(m_players.count(m_pad_map[0]) ? m_players.at(m_pad_map[0]).name : ""));
-  std::string p2Username;
-  for (int i = 1; i < 4; i++)
-  {
-    PlayerId pid = m_pad_map[i];
-    if (pid != 0 && m_players.count(pid))
-    {
-      p2Username = std::string(StripWhitespace(m_players.at(pid).name));
-      break;
-    }
-  }
-
-  INFO_LOG_FMT(COMMON, "HUD reset check: P1='{}', P2='{}'", p1Username, p2Username.empty() ? "none" : p2Username);
-
-  std::string hudPath = File::GetUserPath(D_HUDFILES_IDX) + "hud.json";
-  int resultCode = allowLoadFromHUD(hudPath, p1Username, p2Username);
-
-  if (resultCode == 0)
-  {
-    if (!LoadStateFromHud(hudPath, Gecko::HUDState, p1Username, p2Username))
-      resultCode = 2;
-  }
-
-  m_dialog->OnFastResetFromHUDResult(resultCode);
-  Gecko::setFastResetFromHUD(resultCode == 0);
-}
 
 void NetPlayClient::OnChecksumMsg(sf::Packet& packet)
 {
@@ -1995,14 +1952,6 @@ void NetPlayClient::SendDisableReplays(bool disable)
   SendAsync(std::move(packet));
 }
 
-void NetPlayClient::SendFastResetFromHUD(bool load_from_hud)
-{
-  sf::Packet packet;
-  packet << MessageID::FastResetFromHUD;
-  packet << load_from_hud;
-
-  SendAsync(std::move(packet));
-}
 
 void NetPlayClient::SendCoinFlip(int randNum)
 {

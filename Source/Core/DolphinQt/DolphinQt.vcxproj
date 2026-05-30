@@ -179,6 +179,7 @@
     <ClCompile Include="MenuBar.cpp" />
     <ClCompile Include="NetPlay\ChunkedProgressDialog.cpp" />
     <ClCompile Include="NetPlay\GameDigestDialog.cpp" />
+    <ClCompile Include="NetPlay\MSBGameStateWidget.cpp" />
     <ClCompile Include="NetPlay\GameListDialog.cpp" />
     <ClCompile Include="NetPlay\NetPlayBrowser.cpp" />
     <ClCompile Include="NetPlay\NetPlayDialog.cpp" />
@@ -392,6 +393,7 @@
     <QtMoc Include="MenuBar.h" />
     <QtMoc Include="NetPlay\ChunkedProgressDialog.h" />
     <QtMoc Include="NetPlay\GameDigestDialog.h" />
+    <QtMoc Include="NetPlay\MSBGameStateWidget.h" />
     <QtMoc Include="NetPlay\GameListDialog.h" />
     <QtMoc Include="NetPlay\NetPlayBrowser.h" />
     <QtMoc Include="NetPlay\NetPlayDialog.h" />
