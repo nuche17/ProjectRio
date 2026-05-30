@@ -1,4 +1,4 @@
-// Copyright 2008 Dolphin Emulator Project
+﻿// Copyright 2008 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/Core.h"
@@ -391,7 +391,7 @@ void TrainingMode(const Core::CPUThreadGuard& guard)
           roundf(u32ToFloat(PowerPC::MMU::HostRead_U32(guard, aChargeDown)) * 100));
 
       float angle = roundf((float)PowerPC::MMU::HostRead_U16(guard, aBallAngle) * 36000 / 4096) /
-                    100;  // 0x400 == 90°, 0x800 == 180°, 0x1000 == 360°
+                    100;  // 0x400 == 90Â°, 0x800 == 180Â°, 0x1000 == 360Â°
       float xVelocity =
           roundf(u32ToFloat(PowerPC::MMU::HostRead_U32(guard, aBallVelocity_X)) * 6000) /
           100;  // * 60 cause default units are meters per frame
@@ -449,7 +449,7 @@ void TrainingMode(const Core::CPUThreadGuard& guard)
                                        "Contact Quality: {}\n"
                                        "Input Direction:  {}\n"
                                        "Charge Percent:  {}%\n"
-                                       "Ball Angle:  {}°\n\n"
+                                       "Ball Angle:  {}Â°\n\n"
                                        "Exit Velocities:  \n"
                                        "X :  {} m/s  -->  {} mph\n"
                                        "Y:  {} m/s  -->  {} mph\n"
@@ -716,10 +716,10 @@ void RunDraftTimer(const Core::CPUThreadGuard& guard)
   }
 }
 
-void MSBQuickMatchBattingOrderMsg(const Core::CPUThreadGuard& guard, MSBQuickMatchGameState& state)
+void MSBQuickMatchBattingOrderMsg(const Core::CPUThreadGuard& guard, MSB_QuickMatchState& state)
 {
   // Validate state has been initialized
-  if (!state.firstBatter.has_value())
+  if (!state.GetFirstBatter().has_value())
   {
     INFO_LOG_FMT(COMMON, "State.firstBatter doesn't have value - no message");
     return;
