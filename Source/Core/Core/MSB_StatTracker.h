@@ -653,6 +653,7 @@ static const u32 aFielder_AnyJump = 0x8088F56B; //Pitcher
 static const u32 aFielder_Action = 0x8088F5C1; //Pitcher. 2=Slide, 3=Walljump
 static const u32 aFielder_Bobble = 0x8088F5C0; //Pitcher
 static const u32 aFielder_Knockout = 0x8088F578; //Pitcher
+static const u32 aFielder_OnFire = 0x8088F577; //Pitcher. 1 while burning from a Bowser Castle fireball
 static const u32 aFielder_Pos_X = 0x8088F368; //Pitcher
 static const u32 aFielder_Pos_Z = 0x8088F370; //Pitcher
 static const u32 aFielder_Pos_Y = 0x8088F374; //Pitcher
@@ -691,8 +692,9 @@ static const u32 aAB_FramesSinceLastBounce        = 0x808926AC; //s16. -1 at con
 static const u32 aAB_FrameCountdownAfterPlantSpit = 0x8089272D; //u8. Set to 3 when a plant releases the ball, counts down to 0
 
 //Fields shared by every stadium object we track. Each object's update function pointer identifies what it is
-static const u32 cStadiumObj_MaxCount  = 20;   //The game allocates room for 20 objects
+static const u32 cStadiumObj_MaxCount  = 32;   //Yoshi Park and Wario Palace allocate 20 objects, Bowser Castle 32
 static const u32 cStadiumObj_UpdateFn  = 0x7C; //Ptr to the object's per-frame update function
+static const u32 cStadiumObj_OnCollisionFn = 0x80; //Ptr to the function run when the ball hits the object's mesh
 static const u32 cStadiumObj_SlotIndex = 0x9C; //u8. Index into the stadium's placement table. Used as the Hazard ID
 static const u32 cStadiumObj_Pos_X     = 0xA0; //float
 static const u32 cStadiumObj_Pos_Y     = 0xA4; //float
@@ -755,6 +757,52 @@ static const u8 cTornadoState_WindingDown  = 3; //Ball released (or never entere
 //Wario Palace sand stars
 static const u32 cSandStar_HitAnimPtr = 0x8C; //Ptr. Non-zero while the hit animation plays
 static const u32 cSandStar_HitFlag    = 0xA4; //u8. 1 once the star has been collected (star skills on)
+
+//Bowser Castle. Its objects use a different layout: position first, then the placement-table index
+static const u8  cStadiumId_BowserCastle = 0x1;
+static const u32 cCastleObj_Pos_X     = 0x9C; //float
+static const u32 cCastleObj_Pos_Y     = 0xA0; //float
+static const u32 cCastleObj_Pos_Z     = 0xA4; //float
+static const u32 cCastleObj_SlotIndex = 0xA8; //u8. Index into the placement table. Used as the Hazard ID
+static const u32 cCastleObj_SubType   = 0xA9; //u8
+static const u32 cUpdateFn_CastleThwomp       = 0x80706AA0; //thwompControl
+static const u32 cUpdateFn_CastleFlame        = 0x80705464; //flameControl
+static const u32 cOnCollisionFn_CastleStarPad = 0x807031E0; //bowserCastleStarPadsContactFn. Star pads have no update function
+//The ball hitting a thwomp or star pad posts a marker into this array (index 2/3 = thwomp, 6/7 = star pad)
+static const u32 aCastle_HazardHitPending = 0x8086AF28; //u8[10]. Non-zero while the marker is displayed
+static const u32 cCastle_HitMarkerCount   = 10;
+//Thwomps
+static const u32 cThwomp_FallSpeed      = 0xAC; //float. Rolled each pitch
+static const u32 cThwomp_State          = 0xB0; //u8. See cThwompState_*
+static const u32 cThwomp_FramesOnGround = 0xB1; //u8
+static const u32 cThwomp_CheckForSlam   = 0xB2; //u8. Cleared once the ball can no longer trigger this thwomp this play
+static const u8 cThwompState_Perched   = 0;
+static const u8 cThwompState_Windup    = 1; //Rises 2.5 before dropping
+static const u8 cThwompState_Falling   = 2;
+static const u8 cThwompState_Grounded  = 3;
+static const u8 cThwompState_Returning = 4;
+static const float cHazard_ThwompAttributionRadius = 10.0f;
+//Flames (fireball launchers)
+static const u32 cFlame_Velo_X            = 0xAC; //float. Set when the fireball launches
+static const u32 cFlame_Velo_Y            = 0xB0; //float
+static const u32 cFlame_Velo_Z            = 0xB4; //float
+static const u32 cFlame_LaunchAngleBase   = 0xB8; //u16. Degrees
+static const u32 cFlame_LaunchAngleSpread = 0xBA; //u16. Degrees
+static const u32 cFlame_LaunchTimer       = 0xBC; //u8. Frames until the next launch
+static const u32 cFlame_State             = 0xBD; //u8. See cFlameState_*
+static const u8 cFlameState_Idle      = 0;
+static const u8 cFlameState_Flying    = 1;
+static const u8 cFlameState_Exploding = 2; //Only reached by burning a fielder
+static const u8 cFlameState_Ended     = 3; //Hit the ground or the ball
+static const float cHazard_FlameRadius            = 2.6f; //Burns fielders and is put out by the ball within this distance
+static const float cHazard_FlameAttributionRadius = 8.0f;
+//Fireballs launch constantly, so logging every shot is off. The code is kept so it can be turned on if it turns out to be useful
+static constexpr bool cHazard_LogFlameShots = false;
+//Star pads
+static const u8 cStarPadType_Wall  = 4;
+static const u8 cStarPadType_Floor = 5;
+static const u8 cStarPadType_Used  = 6;
+static const float cHazard_StarPadAttributionRadius = 10.0f;
 
 
 class StatTracker{
@@ -1301,6 +1349,8 @@ public:
         u16 parent_sequence = 0;         //Group for the current activation. 0 = none assigned yet
         std::array<u32, 3> aux_pos = {}; //Tornado: where the ball was when it triggered
         u16 aux_frame = 0;               //Tornado: frame it triggered
+        size_t aux_event = 0;            //Thwomp: index of the drop event waiting for its landing spot
+        bool aux_event_valid = false;
     };
     struct HazardTrackerState {
         bool initialized = false;
@@ -1309,6 +1359,8 @@ public:
         u16 next_parent_sequence = 1;
         s16 frames_since_last_bounce = -1;
         u8 chomp_ball_marker = 0;
+        std::array<u8, cRosterSize> fielder_on_fire = {};
+        std::array<u8, cCastle_HitMarkerCount> castle_hit_markers = {};
 
         //Events waiting a few frames for the ball velocity to settle before it is recorded
         struct PendingVelocity {
@@ -1357,7 +1409,7 @@ public:
     void logContactResult(const Core::CPUThreadGuard& guard, Contact* in_contact);
     void logFinalResults(const Core::CPUThreadGuard& guard, Event& in_event);
 
-    //Stadium hazards. Yoshi Park plants, Wario Palace chomps/tornados/sand stars
+    //Stadium hazards. Yoshi Park plants, Wario Palace chomps/tornados/sand stars, Bowser Castle thwomps/fireballs/star pads
     void resetHazardTracking();
     void logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in_contact);
     HazardEvent& addHazardEvent(Contact* in_contact, u8 hazard_type, u8 hazard_id, u8 interaction, u16 parent_sequence, u16 frame);
