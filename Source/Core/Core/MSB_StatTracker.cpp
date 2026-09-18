@@ -25,6 +25,8 @@
 #include "Common/TagSet.h"
 
 #include "Core/GeckoCodeConfig.h"
+#include <cmath>
+#include <sstream>
 #include "Core/NetPlayServer.h"
 
 void StatTracker::Run(const Core::CPUThreadGuard& guard)
@@ -364,6 +366,8 @@ void StatTracker::lookForTriggerEvents(const Core::CPUThreadGuard& guard)
 
                 break;
             case (EVENT_STATE::CONTACT_RESULT):                
+                //Poll the stadium hazards every frame the ball is live
+                logHazardEvents(guard, &m_game_info.getCurrentEvent().pitch->contact.value());
                 if (PowerPC::MMU::HostRead_U8(guard, aAB_ContactResult) != 0){
                     //Indicate that pitch resulted in contact and log contact details
                     m_game_info.getCurrentEvent().pitch->pitch_result = 6;
@@ -402,6 +406,8 @@ void StatTracker::lookForTriggerEvents(const Core::CPUThreadGuard& guard)
                     //Continue polling for fielder possession and bobbles until the ball is collected.
                     //Guard against pickoff events which reach MONITOR_RUNNERS without a pitch or contact.
                     if (m_game_info.getCurrentEvent().pitch.has_value() && m_game_info.getCurrentEvent().pitch->contact.has_value()){
+                        //Keep polling the stadium hazards until the play is over
+                        logHazardEvents(guard, &m_game_info.getCurrentEvent().pitch->contact.value());
                         if (!m_game_info.getCurrentEvent().pitch->contact->collect_fielder.has_value()){
                             if (!m_game_info.getCurrentEvent().pitch->contact->first_fielder.has_value())
                                 m_game_info.getCurrentEvent().pitch->contact->first_fielder = logFielderBobble(guard);
@@ -769,6 +775,7 @@ void StatTracker::logContact(const Core::CPUThreadGuard& guard, Event& in_event)
     Pitch* pitch = &in_event.pitch.value();
     //Create contact object to populate and get a ptr to it
     pitch->contact = std::make_optional(Contact());
+    resetHazardTracking();
     std::cout << "  Pitch Type: " << std::to_string(in_event.pitch->pitch_type) << "\n";
     Contact* contact = &in_event.pitch->contact.value();
 
@@ -1243,6 +1250,12 @@ std::string StatTracker::getStatJSON(bool inDecode, bool hide_riokey){
                 json_stream << "          \"Contact Result - Primary\": "         << decode("PrimaryContactResult", contact->primary_contact_result, inDecode) << ",\n";
                 json_stream << "          \"Contact Result - Secondary\": "       << decode("SecondaryContactResult", contact->secondary_contact_result, inDecode);
 
+                //=== Hazard Events ===
+                if (!contact->hazard_events.empty()){
+                    json_stream << ",\n";
+                    json_stream << getHazardEventsJSON(contact->hazard_events, "          ", inDecode);
+                }
+
                 //=== Fielder ===
                 //TODO could be reworked
                 if (contact->first_fielder.has_value() || contact->collect_fielder.has_value()){
@@ -1584,6 +1597,12 @@ std::string StatTracker::getHUDJSON(std::string in_event_num, Event& in_curr_eve
             json_stream << "        \"Contact Result - Primary\": "         << decode("PrimaryContactResult", contact->primary_contact_result, inDecode) << ",\n";
             json_stream << "        \"Contact Result - Secondary\": "       << decode("SecondaryContactResult", contact->secondary_contact_result, inDecode);
 
+            //=== Hazard Events ===
+            if (!contact->hazard_events.empty()){
+                json_stream << ",\n";
+                json_stream << getHazardEventsJSON(contact->hazard_events, "        ", inDecode);
+            }
+
             //=== Fielder ===
             //TODO could be reworked
             if (contact->first_fielder.has_value() || contact->collect_fielder.has_value()){
@@ -1736,6 +1755,305 @@ std::optional<StatTracker::Fielder> StatTracker::logFielderBobble(const Core::CP
         }
     }
     return std::nullopt;
+}
+
+//=== Stadium hazards ===
+
+void StatTracker::resetHazardTracking(){
+    m_hazard_state = HazardTrackerState();
+}
+
+StatTracker::HazardEvent& StatTracker::addHazardEvent(Contact* in_contact, u8 hazard_type, u8 hazard_id, u8 interaction, u16 parent_sequence, u16 frame){
+    HazardEvent hazard_event;
+    hazard_event.sequence = static_cast<u16>(in_contact->hazard_events.size() + 1);
+    hazard_event.parent_sequence = parent_sequence;
+    hazard_event.hazard_type = hazard_type;
+    hazard_event.hazard_id = hazard_id;
+    hazard_event.interaction = interaction;
+    hazard_event.frame = frame;
+    in_contact->hazard_events.push_back(hazard_event);
+    return in_contact->hazard_events.back();
+}
+
+//Polls the Yoshi Park plants every frame the ball is live and records an event whenever one interacts with the ball or a fielder.
+//Red plants eat the ball (Ball Contact), spit it back out (Projectile) and knock out fielders that touch them (Fielder Contact).
+//Yellow plants bounce the ball and award the batting team a star (Ball Contact). Any other bounce off a plant is a Ball Contact.
+//Plant fields are read straight out of the game's stadium object array, see the cPlant_* offsets.
+void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in_contact){
+    if (m_game_info.stadium != cStadiumId_YoshiPark) { return; }
+    //The plants only update while the game reports a live ball (cGameControlState 0x2)
+    if (PowerPC::MMU::HostRead_U8(guard, aGameControlStateCurr) != 0x2) { return; }
+
+    u32 obj_array = PowerPC::MMU::HostRead_U32(guard, aStadiumObj_ArrayPtr);
+    //The object array is heap allocated. Bail if the pointer doesn't point into MEM1
+    if (obj_array < 0x80000000 || obj_array >= 0x81800000) { return; }
+
+    //Spits: the game holds the ball at the mouth for a few frames after release, wait for that countdown before reading the velocity
+    const int cSpitVelocityMinFrames = 4;
+    const int cVelocityMaxWaitFrames = 10;
+
+    u8 plant_count = PowerPC::MMU::HostRead_U8(guard, aYoshiPark_PlantCount);
+    if (plant_count > cYoshiPark_MaxPlants) { plant_count = cYoshiPark_MaxPlants; }
+    u16 frame = PowerPC::MMU::HostRead_U16(guard, aAB_FramesSinceContact);
+
+    auto readBallPos = [&](HazardEvent& in_event){
+        in_event.pos_x = PowerPC::MMU::HostRead_U32(guard, aAB_BallPos_X);
+        in_event.pos_y = PowerPC::MMU::HostRead_U32(guard, aAB_BallPos_Y);
+        in_event.pos_z = PowerPC::MMU::HostRead_U32(guard, aAB_BallPos_Z);
+    };
+    auto readBallVelocity = [&](){
+        return std::array<u32, 3>{PowerPC::MMU::HostRead_U32(guard, aAB_BallVel_X),
+                                  PowerPC::MMU::HostRead_U32(guard, aAB_BallVel_Y),
+                                  PowerPC::MMU::HostRead_U32(guard, aAB_BallVel_Z)};
+    };
+    auto floatToJSON = [](float in_value){
+        std::stringstream ss;
+        ss << in_value;
+        return ss.str();
+    };
+    auto xzDistance = [](float x1, float z1, float x2, float z2){
+        float dx = x1 - x2;
+        float dz = z1 - z2;
+        return std::sqrt((dx * dx) + (dz * dz));
+    };
+
+    //Record the ball velocity for events that were waiting on it. Done before this frame's events so a
+    //bounce logged last frame reads the post-bounce velocity
+    u8 spit_countdown = PowerPC::MMU::HostRead_U8(guard, aAB_FrameCountdownAfterPlantSpit);
+    for (auto it = m_hazard_state.pending_velocity.begin(); it != m_hazard_state.pending_velocity.end();){
+        ++it->frames_waited;
+        bool ready = it->wait_for_spit_countdown ? (spit_countdown == 0 && it->frames_waited >= cSpitVelocityMinFrames) : true;
+        if (ready || it->frames_waited >= cVelocityMaxWaitFrames){
+            in_contact->hazard_events[it->event_index].result_velocity = readBallVelocity();
+            it = m_hazard_state.pending_velocity.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
+
+    //Snapshot every plant this frame
+    struct PlantNow {
+        bool valid = false;
+        PlantSnapshot snap;
+        float x = 0;
+        float y = 0;
+        float z = 0;
+        float scale = 0;
+        float spit_angle = 0;
+    };
+    std::array<PlantNow, cYoshiPark_MaxPlants> plants;
+    for (u8 i = 0; i < plant_count; ++i){
+        u32 obj = obj_array + (i * cStadiumObj_Size);
+        if (PowerPC::MMU::HostRead_U8(guard, obj + cPlant_NotAPlant) != 0) { continue; }
+        plants[i].valid = true;
+        plants[i].snap.slot          = PowerPC::MMU::HostRead_U8(guard, obj + cPlant_SlotIndex);
+        plants[i].snap.state         = PowerPC::MMU::HostRead_U8(guard, obj + cPlant_State);
+        plants[i].snap.type          = PowerPC::MMU::HostRead_U8(guard, obj + cPlant_Type);
+        plants[i].snap.ball_in_mouth = PowerPC::MMU::HostRead_U8(guard, obj + cPlant_BallInMouth);
+        plants[i].snap.phase         = PowerPC::MMU::HostRead_U8(guard, obj + cPlant_Phase);
+        plants[i].x          = floatConverter(PowerPC::MMU::HostRead_U32(guard, obj + cPlant_Pos_X));
+        plants[i].y          = floatConverter(PowerPC::MMU::HostRead_U32(guard, obj + cPlant_Pos_Y));
+        plants[i].z          = floatConverter(PowerPC::MMU::HostRead_U32(guard, obj + cPlant_Pos_Z));
+        plants[i].scale      = floatConverter(PowerPC::MMU::HostRead_U32(guard, obj + cPlant_Scale));
+        plants[i].spit_angle = floatConverter(PowerPC::MMU::HostRead_U32(guard, obj + cPlant_SpitAngle));
+    }
+
+    std::array<u8, cRosterSize> knockouts = {};
+    for (u8 pos = 0; pos < cRosterSize; ++pos){
+        knockouts[pos] = PowerPC::MMU::HostRead_U8(guard, aFielder_Knockout + (pos * cFielder_Offset));
+    }
+    s16 frames_since_bounce = static_cast<s16>(PowerPC::MMU::HostRead_U16(guard, aAB_FramesSinceLastBounce));
+
+    //First frame after contact: just store the baseline
+    if (!m_hazard_state.initialized){
+        for (u8 i = 0; i < cYoshiPark_MaxPlants; ++i) { m_hazard_state.plants[i] = plants[i].snap; }
+        m_hazard_state.fielder_knockout = knockouts;
+        m_hazard_state.frames_since_last_bounce = frames_since_bounce;
+        m_hazard_state.initialized = true;
+        return;
+    }
+
+    //Every interaction from one pop-up shares a parent sequence
+    auto getParentSequence = [&](PlantSnapshot& in_prev) -> u16 {
+        if (in_prev.parent_sequence == 0) { in_prev.parent_sequence = m_hazard_state.next_parent_sequence++; }
+        return in_prev.parent_sequence;
+    };
+    auto plantIsActive = [](const PlantSnapshot& in_snap){
+        return in_snap.state >= cPlantState_PopUp && in_snap.state <= cPlantState_Star;
+    };
+
+    std::array<bool, cYoshiPark_MaxPlants> ball_contact_logged = {};
+    for (u8 i = 0; i < cYoshiPark_MaxPlants; ++i){
+        if (!plants[i].valid) { continue; }
+        PlantSnapshot& prev = m_hazard_state.plants[i];
+        PlantSnapshot& now  = plants[i].snap;
+
+        //Red plant ate the ball
+        if (!prev.ball_in_mouth && now.ball_in_mouth){
+            HazardEvent& hazard_event = addHazardEvent(in_contact, static_cast<u8>(HAZARD_TYPE::RED_PLANT), now.slot,
+                                                       static_cast<u8>(HAZARD_INTERACTION::BALL_CONTACT), getParentSequence(prev), frame);
+            readBallPos(hazard_event);
+            hazard_event.details.push_back({"Spit Angle", floatToJSON(plants[i].spit_angle), ""});
+            hazard_event.details.push_back({"Plant Scale", floatToJSON(plants[i].scale), ""});
+            ball_contact_logged[i] = true;
+            std::cout << "Hazard: Plant " << std::to_string(now.slot) << " ate the ball. Frame=" << std::to_string(frame) << "\n";
+        }
+        //Red plant spat the ball out
+        else if (prev.ball_in_mouth && !now.ball_in_mouth && now.state == cPlantState_Spit){
+            HazardEvent& hazard_event = addHazardEvent(in_contact, static_cast<u8>(HAZARD_TYPE::RED_PLANT), now.slot,
+                                                       static_cast<u8>(HAZARD_INTERACTION::PROJECTILE), getParentSequence(prev), frame);
+            readBallPos(hazard_event);
+            hazard_event.details.push_back({"Spit Angle", floatToJSON(plants[i].spit_angle), ""});
+            m_hazard_state.pending_velocity.push_back({in_contact->hazard_events.size() - 1, i, 0, true});
+            ball_contact_logged[i] = true;
+            std::cout << "Hazard: Plant " << std::to_string(now.slot) << " spat the ball. Frame=" << std::to_string(frame) << "\n";
+        }
+
+        //Ball hit a yellow plant. The game awards the batting team a star and the plant is red for the rest of the game
+        if (now.state == cPlantState_Star && prev.state != cPlantState_Star){
+            HazardEvent& hazard_event = addHazardEvent(in_contact, static_cast<u8>(HAZARD_TYPE::YELLOW_PLANT), now.slot,
+                                                       static_cast<u8>(HAZARD_INTERACTION::BALL_CONTACT), getParentSequence(prev), frame);
+            readBallPos(hazard_event);
+            hazard_event.details.push_back({"Star Awarded", m_game_info.star_skills_on ? "true" : "false", ""});
+            m_hazard_state.pending_velocity.push_back({in_contact->hazard_events.size() - 1, i, 0, false});
+            ball_contact_logged[i] = true;
+            std::cout << "Hazard: Ball hit yellow plant " << std::to_string(now.slot) << ". Frame=" << std::to_string(frame) << "\n";
+        }
+    }
+
+    //Red plants knock out any fielder that runs into them. Nothing else knocks fielders out in Yoshi Park while a plant is up,
+    //so a new knockout is attributed to the closest active red plant
+    for (u8 pos = 0; pos < cRosterSize; ++pos){
+        if (m_hazard_state.fielder_knockout[pos] != 0 || knockouts[pos] == 0) { continue; }
+
+        u32 aFielderPosX = aFielder_Pos_X + (pos * cFielder_Offset);
+        u32 aFielderPosY = aFielder_Pos_Y + (pos * cFielder_Offset);
+        u32 aFielderPosZ = aFielder_Pos_Z + (pos * cFielder_Offset);
+        float fielder_x = floatConverter(PowerPC::MMU::HostRead_U32(guard, aFielderPosX));
+        float fielder_z = floatConverter(PowerPC::MMU::HostRead_U32(guard, aFielderPosZ));
+
+        //The plant may already be shrinking this frame, so check last frame's state
+        int closest = -1;
+        float closest_dist = cHazard_KnockoutRadius;
+        for (u8 i = 0; i < cYoshiPark_MaxPlants; ++i){
+            if (!plants[i].valid || plants[i].snap.type != cPlantType_Red || !plantIsActive(m_hazard_state.plants[i])) { continue; }
+            float dist = xzDistance(fielder_x, fielder_z, plants[i].x, plants[i].z);
+            if (dist < closest_dist){
+                closest = i;
+                closest_dist = dist;
+            }
+        }
+        if (closest < 0){
+            std::cout << "Hazard: Fielder pos " << std::to_string(pos) << " knocked out but no active red plant nearby\n";
+            continue;
+        }
+
+        HazardEvent& hazard_event = addHazardEvent(in_contact, static_cast<u8>(HAZARD_TYPE::RED_PLANT), plants[closest].snap.slot,
+                                                   static_cast<u8>(HAZARD_INTERACTION::FIELDER_CONTACT), getParentSequence(m_hazard_state.plants[closest]), frame);
+        hazard_event.pos_x = PowerPC::MMU::HostRead_U32(guard, aFielderPosX);
+        hazard_event.pos_y = PowerPC::MMU::HostRead_U32(guard, aFielderPosY);
+        hazard_event.pos_z = PowerPC::MMU::HostRead_U32(guard, aFielderPosZ);
+        hazard_event.fielder = PowerPC::MMU::HostRead_U8(guard, aFielder_RosterLoc + (pos * cFielder_Offset));
+        hazard_event.details.push_back({"Fielder Position", std::to_string(pos), "Position"});
+        hazard_event.details.push_back({"Fielder Character", std::to_string(PowerPC::MMU::HostRead_U8(guard, aFielder_CharId + (pos * cFielder_Offset))), "Character"});
+        std::cout << "Hazard: Plant " << std::to_string(plants[closest].snap.slot) << " knocked out fielder pos " << std::to_string(pos) << ". Frame=" << std::to_string(frame) << "\n";
+    }
+
+    //Any other bounce off a plant (red plant body, retracted plant, etc). The game zeroes the bounce counter on the frame
+    //of a bounce and stores the surface type it hit
+    if (frames_since_bounce == 0 && m_hazard_state.frames_since_last_bounce != 0){
+        u8 collision_code = PowerPC::MMU::HostRead_U32(guard, aAB_BallCollisionCode) & 0x7F;
+        std::cout << "Hazard: Ball bounce. Collision code=0x" << std::hex << static_cast<int>(collision_code) << std::dec << " Frame=" << std::to_string(frame) << "\n";
+        if (cHazardBounceCollisionCodes.count(collision_code)){
+            float ball_x = floatConverter(PowerPC::MMU::HostRead_U32(guard, aAB_BallPos_X));
+            float ball_z = floatConverter(PowerPC::MMU::HostRead_U32(guard, aAB_BallPos_Z));
+            int closest = -1;
+            float closest_dist = cHazard_BounceRadius;
+            for (u8 i = 0; i < cYoshiPark_MaxPlants; ++i){
+                if (!plants[i].valid || ball_contact_logged[i] || plants[i].snap.ball_in_mouth) { continue; }
+                //Ignore the plant that just spat the ball out until the ball is on its way
+                bool spitting = false;
+                for (auto& pending : m_hazard_state.pending_velocity){
+                    if (pending.plant_index == i && pending.wait_for_spit_countdown) { spitting = true; }
+                }
+                if (spitting) { continue; }
+
+                float dist = xzDistance(ball_x, ball_z, plants[i].x, plants[i].z);
+                if (dist < closest_dist){
+                    closest = i;
+                    closest_dist = dist;
+                }
+            }
+            if (closest >= 0){
+                u8 hazard_type = static_cast<u8>((plants[closest].snap.type == cPlantType_Yellow) ? HAZARD_TYPE::YELLOW_PLANT : HAZARD_TYPE::RED_PLANT);
+                HazardEvent& hazard_event = addHazardEvent(in_contact, hazard_type, plants[closest].snap.slot,
+                                                           static_cast<u8>(HAZARD_INTERACTION::BALL_CONTACT), getParentSequence(m_hazard_state.plants[closest]), frame);
+                readBallPos(hazard_event);
+                hazard_event.details.push_back({"Collision Code", std::to_string(collision_code), ""});
+                m_hazard_state.pending_velocity.push_back({in_contact->hazard_events.size() - 1, static_cast<u8>(closest), 0, false});
+                std::cout << "Hazard: Ball bounced off plant " << std::to_string(plants[closest].snap.slot) << ". Frame=" << std::to_string(frame) << "\n";
+            }
+        }
+    }
+
+    //Store this frame as the baseline for the next one. A plant's group ends once it is back to idle
+    for (u8 i = 0; i < cYoshiPark_MaxPlants; ++i){
+        if (!plants[i].valid) { continue; }
+        u16 parent_sequence = (plants[i].snap.state == cPlantState_Idle) ? 0 : m_hazard_state.plants[i].parent_sequence;
+        m_hazard_state.plants[i] = plants[i].snap;
+        m_hazard_state.plants[i].parent_sequence = parent_sequence;
+    }
+    m_hazard_state.fielder_knockout = knockouts;
+    m_hazard_state.frames_since_last_bounce = frames_since_bounce;
+}
+
+//Writes the "Hazard Events" list for a contact. No trailing newline so the caller controls the separator
+std::string StatTracker::getHazardEventsJSON(std::vector<HazardEvent>& in_events, std::string indent, bool inDecode){
+    std::stringstream json_stream;
+    std::string indent2 = indent + "  ";
+    std::string indent3 = indent + "    ";
+    std::string indent4 = indent + "      ";
+
+    json_stream << indent << "\"Hazard Events\": [\n";
+    for (size_t n = 0; n < in_events.size(); ++n){
+        HazardEvent& hazard_event = in_events[n];
+        json_stream << indent2 << "{\n";
+        json_stream << indent3 << "\"Sequence\": "        << std::to_string(hazard_event.sequence) << ",\n";
+        json_stream << indent3 << "\"Parent Sequence\": " << std::to_string(hazard_event.parent_sequence) << ",\n";
+        json_stream << indent3 << "\"Hazard Type\": "     << decode("HazardType", hazard_event.hazard_type, inDecode) << ",\n";
+        json_stream << indent3 << "\"Hazard ID\": "       << std::to_string(hazard_event.hazard_id) << ",\n";
+        json_stream << indent3 << "\"Interaction\": "     << decode("HazardInteraction", hazard_event.interaction, inDecode) << ",\n";
+        json_stream << indent3 << "\"Frame\": "           << std::to_string(hazard_event.frame) << ",\n";
+        json_stream << indent3 << "\"Position - X\": "    << floatConverter(hazard_event.pos_x) << ",\n";
+        json_stream << indent3 << "\"Position - Y\": "    << floatConverter(hazard_event.pos_y) << ",\n";
+        json_stream << indent3 << "\"Position - Z\": "    << floatConverter(hazard_event.pos_z) << ",\n";
+        if (hazard_event.result_velocity.has_value()){
+            json_stream << indent3 << "\"Result Velocity - X\": " << floatConverter(hazard_event.result_velocity->at(0)) << ",\n";
+            json_stream << indent3 << "\"Result Velocity - Y\": " << floatConverter(hazard_event.result_velocity->at(1)) << ",\n";
+            json_stream << indent3 << "\"Result Velocity - Z\": " << floatConverter(hazard_event.result_velocity->at(2)) << ",\n";
+        }
+        if (hazard_event.target.has_value()){
+            json_stream << indent3 << "\"Target - X\": " << floatConverter(hazard_event.target->at(0)) << ",\n";
+            json_stream << indent3 << "\"Target - Y\": " << floatConverter(hazard_event.target->at(1)) << ",\n";
+            json_stream << indent3 << "\"Target - Z\": " << floatConverter(hazard_event.target->at(2)) << ",\n";
+        }
+        if (hazard_event.fielder.has_value()){
+            json_stream << indent3 << "\"Fielder\": " << std::to_string(hazard_event.fielder.value()) << ",\n";
+        }
+        //Details is always last so nothing above has to worry about trailing commas
+        json_stream << indent3 << "\"Details\": {";
+        for (size_t d = 0; d < hazard_event.details.size(); ++d){
+            const HazardEvent::Detail& detail = hazard_event.details[d];
+            std::string value = detail.decode_type.empty() ? detail.value : decode(detail.decode_type, static_cast<u8>(std::stoi(detail.value)), inDecode);
+            json_stream << ((d == 0) ? "\n" : ",\n") << indent4 << "\"" << detail.key << "\": " << value;
+        }
+        if (!hazard_event.details.empty()) { json_stream << "\n" << indent3; }
+        json_stream << "}\n";
+        json_stream << indent2 << "}" << ((n + 1 < in_events.size()) ? "," : "") << "\n";
+    }
+    json_stream << indent << "]";
+    return json_stream.str();
 }
 
 //Read players from ini file and assign to team
@@ -2129,6 +2447,16 @@ std::string StatTracker::decode(std::string type, u8 value, bool decode){
         }
         else if (value == 0xFF){
             retVal = "None";
+        }
+    }
+    else if (type == "HazardType"){
+        if (cHazardType.count(value)){
+            retVal = cHazardType.at(value);
+        }
+    }
+    else if (type == "HazardInteraction"){
+        if (cHazardInteraction.count(value)){
+            retVal = cHazardInteraction.at(value);
         }
     }
     else{

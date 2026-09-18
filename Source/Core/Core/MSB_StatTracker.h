@@ -65,6 +65,29 @@ enum class DEAD_BALL_REASON
     BALL_DEAD
 };
 
+//Hazard event enums. Codes match the "Hazard Structures" sheet
+enum class HAZARD_TYPE : u8
+{
+    BLOCK = 0,
+    CHOMP = 1,
+    TORNADO = 2,
+    SAND_STAR = 3,
+    RED_PLANT = 4,
+    YELLOW_PLANT = 5,
+    BARREL = 6,
+    KLAPTRAP = 7,
+    THWOMP = 8,
+    FIREBALL = 9,
+    STAR_PAD = 10
+};
+
+enum class HAZARD_INTERACTION : u8
+{
+    BALL_CONTACT = 0,
+    FIELDER_CONTACT = 1,
+    PROJECTILE = 2
+};
+
 static std::map<EVENT_STATE, std::string> c_event_state = {
     {EVENT_STATE::INIT_EVENT, "INIT_EVENT"},
     {EVENT_STATE::PITCH_RESULT, "PITCH_RESULT"},
@@ -403,6 +426,26 @@ static const std::map<u8, std::string> cGameControlState = {
     {0x22, "PostMinigameMenu"},
 };
 
+static const std::map<u8, std::string> cHazardType = {
+    {0x0,  "Block"},
+    {0x1,  "Chomp"},
+    {0x2,  "Tornado"},
+    {0x3,  "Sand Star"},
+    {0x4,  "Red Plant"},
+    {0x5,  "Yellow Plant"},
+    {0x6,  "Barrel"},
+    {0x7,  "Klaptrap"},
+    {0x8,  "Thwomp"},
+    {0x9,  "Fireball"},
+    {0xA,  "Star Pad"},
+};
+
+static const std::map<u8, std::string> cHazardInteraction = {
+    {0x0,  "Ball Contact"},
+    {0x1,  "Fielder Contact"},
+    {0x2,  "Projectile"},
+};
+
 //Const for structs
 static const int cRosterSize = 9;
 static const int cNumOfTeams = 2;
@@ -634,6 +677,50 @@ static const u32 aRunner_CurrentBase = 0x8088EF3D;
 static const u32 aRunner_Stealing = 0x8088EF66;
 static const u32 cRunner_Offset = 0x154;
 
+//Stadium hazard addrs
+//The game keeps every stadium object (plants, blocks, etc) in one heap-allocated array of 0xE8 byte objects.
+//The pointer to that array lives in the stadiumObjectCollision struct
+static const u32 aStadiumObj_ArrayPtr = 0x808961C4; //Ptr to the first object
+static const u32 aStadiumObj_Count    = 0x808961F4; //Number of objects in the array
+static const u32 cStadiumObj_Size     = 0xE8;
+
+//Ball vars used for hazard events (all live in the ball struct that starts at 0x80890B38)
+static const u32 aAB_FramesSinceContact           = 0x8089269E; //u16. 0 at contact, increments every frame the ball is live
+static const u32 aAB_BallCollisionCode            = 0x8089267C; //u32. Low 7 bits = surface type of the last collision. Only written when non-zero
+static const u32 aAB_FramesSinceLastBounce        = 0x808926AC; //s16. -1 at contact, 0 on the frame of a bounce
+static const u32 aAB_FrameCountdownAfterPlantSpit = 0x8089272D; //u8. Set to 3 when a plant releases the ball, counts down to 0
+
+//Yoshi Park plants. The plants are the first N objects in the stadium object array
+static const u8  cStadiumId_YoshiPark  = 0x3;
+static const u32 aYoshiPark_PlantCount = 0x8086BEF1; //u8. Number of plant objects loaded (max 10)
+static const u8  cYoshiPark_MaxPlants  = 10;
+//Offsets within a plant object
+static const u32 cPlant_SlotIndex   = 0x9C; //u8. Index into the stadium's plant table. Used as the Hazard ID
+static const u32 cPlant_NotAPlant   = 0x9D; //u8. 1 for the trailing non-plant object
+static const u32 cPlant_Pos_X       = 0xA0; //float
+static const u32 cPlant_Pos_Y       = 0xA4; //float
+static const u32 cPlant_Pos_Z       = 0xA8; //float
+static const u32 cPlant_Scale       = 0xB4; //float. 0.2 when retracted, grows to ~1.3
+static const u32 cPlant_SpitAngle   = 0xBC; //float. Degrees, chosen when the ball is eaten
+static const u32 cPlant_State       = 0xC4; //u8. See cPlantState_*
+static const u32 cPlant_Type        = 0xC8; //u8. See cPlantType_*
+static const u32 cPlant_BallInMouth = 0xCA; //u8
+static const u32 cPlant_Phase       = 0xCB; //u8. 4=CatchLow, 5=CatchHigh, 6=CatchStationary, 7=Aiming, 8=Spitting, 9=Recoil
+static const u8 cPlantState_Idle   = 0;
+static const u8 cPlantState_PopUp  = 1;
+static const u8 cPlantState_Track  = 2;
+static const u8 cPlantState_Spit   = 3;
+static const u8 cPlantState_Star   = 4; //Yellow plant was hit by the ball
+static const u8 cPlantState_Shrink = 5;
+static const u8 cPlantType_Red    = 0;
+static const u8 cPlantType_Yellow = 1;
+//Collision codes the game treats as a bounce off a stadium object rather than the ground/walls
+static const std::set<u8> cHazardBounceCollisionCodes = {0x10, 0x11, 0x12, 0x13, 0x14, 0x20, 0x21, 0x30, 0x40, 0x60, 0x61};
+//How far (XZ) a fielder/ball can be from a plant's base and still be attributed to it.
+//The plant's mouth sits up to ~5x its scale away from its base
+static const float cHazard_KnockoutRadius = 12.0f;
+static const float cHazard_BounceRadius   = 10.0f;
+
 
 class StatTracker{
 public:
@@ -717,6 +804,30 @@ public:
         u8 bobble = 0; //Bobble info
     };
 
+    //One interaction between a stadium hazard and the ball or a fielder
+    struct HazardEvent {
+        u16 sequence = 0;        //Order of this interaction within the contact (1-based)
+        u16 parent_sequence = 0; //Groups interactions from the same hazard activation (eg plant eat + spit)
+        u8 hazard_type;          //See cHazardType
+        u8 hazard_id;            //ID of the object within its hazard type
+        u8 interaction;          //See cHazardInteraction
+        u16 frame = 0;           //Frames since contact
+        u32 pos_x = 0;           //Coords of the ball/fielder when it interacted with the hazard
+        u32 pos_y = 0;
+        u32 pos_z = 0;
+        std::optional<std::array<u32, 3>> result_velocity; //Ball velocity after the interaction
+        std::optional<std::array<u32, 3>> target;          //Target coords for projectiles
+        std::optional<u8> fielder;                         //Roster loc of the fielder involved
+
+        //Extra hazard-specific info
+        struct Detail {
+            std::string key;
+            std::string value;       //JSON literal (number, quoted string, true/false)
+            std::string decode_type; //When set, value is a number that decode() can translate (eg "Position")
+        };
+        std::vector<Detail> details;
+    };
+
     struct Contact {
         //Vars with 1:1 Adrs
         TrackerAdr<u16> power       = TrackerAdr<u16>("Ball Power", aAB_BallPower, 0xFFFF);
@@ -778,6 +889,9 @@ public:
 
         std::optional<Fielder> first_fielder;
         std::optional<Fielder> collect_fielder;
+
+        //Interactions with stadium hazards (plants, etc) during this contact
+        std::vector<HazardEvent> hazard_events;
     };
 
     struct Pitch{
@@ -1135,6 +1249,32 @@ public:
     EVENT_STATE m_event_state = EVENT_STATE::INIT_EVENT;
     EVENT_STATE m_event_state_prev = EVENT_STATE::UNDEFINED;
 
+    //Per-frame snapshot of each Yoshi Park plant so hazard events can be logged on state changes
+    struct PlantSnapshot {
+        u8 slot = 0xFF;
+        u8 state = 0;
+        u8 type = 0;
+        u8 ball_in_mouth = 0;
+        u8 phase = 0;
+        u16 parent_sequence = 0; //Group for the current pop-up. 0 = none assigned yet
+    };
+    struct HazardTrackerState {
+        bool initialized = false;
+        std::array<PlantSnapshot, cYoshiPark_MaxPlants> plants;
+        std::array<u8, cRosterSize> fielder_knockout = {};
+        u16 next_parent_sequence = 1;
+        s16 frames_since_last_bounce = -1;
+
+        //Events waiting a few frames for the ball velocity to settle before it is recorded
+        struct PendingVelocity {
+            size_t event_index;
+            u8 plant_index;
+            int frames_waited = 0;
+            bool wait_for_spit_countdown = false;
+        };
+        std::vector<PendingVelocity> pending_velocity;
+    } m_hazard_state;
+
     struct state_members{
         bool m_netplay_session = false;
         std::optional<int> m_tag_set;
@@ -1171,6 +1311,12 @@ public:
     void logPitch(const Core::CPUThreadGuard& guard, Event& in_event);
     void logContactResult(const Core::CPUThreadGuard& guard, Contact* in_contact);
     void logFinalResults(const Core::CPUThreadGuard& guard, Event& in_event);
+
+    //Stadium hazards (Yoshi Park plants for now)
+    void resetHazardTracking();
+    void logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in_contact);
+    HazardEvent& addHazardEvent(Contact* in_contact, u8 hazard_type, u8 hazard_id, u8 interaction, u16 parent_sequence, u16 frame);
+    std::string getHazardEventsJSON(std::vector<HazardEvent>& in_events, std::string indent, bool inDecode);
     //void logManualSelectLocks(Event& in_event);
 
     //Quit function
