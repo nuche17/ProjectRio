@@ -690,16 +690,20 @@ static const u32 aAB_BallCollisionCode            = 0x8089267C; //u32. Low 7 bit
 static const u32 aAB_FramesSinceLastBounce        = 0x808926AC; //s16. -1 at contact, 0 on the frame of a bounce
 static const u32 aAB_FrameCountdownAfterPlantSpit = 0x8089272D; //u8. Set to 3 when a plant releases the ball, counts down to 0
 
-//Yoshi Park plants. The plants are the first N objects in the stadium object array
-static const u8  cStadiumId_YoshiPark  = 0x3;
-static const u32 aYoshiPark_PlantCount = 0x8086BEF1; //u8. Number of plant objects loaded (max 10)
-static const u8  cYoshiPark_MaxPlants  = 10;
-//Offsets within a plant object
-static const u32 cPlant_SlotIndex   = 0x9C; //u8. Index into the stadium's plant table. Used as the Hazard ID
-static const u32 cPlant_NotAPlant   = 0x9D; //u8. 1 for the trailing non-plant object
-static const u32 cPlant_Pos_X       = 0xA0; //float
-static const u32 cPlant_Pos_Y       = 0xA4; //float
-static const u32 cPlant_Pos_Z       = 0xA8; //float
+//Fields shared by every stadium object we track. Each object's update function pointer identifies what it is
+static const u32 cStadiumObj_MaxCount  = 20;   //The game allocates room for 20 objects
+static const u32 cStadiumObj_UpdateFn  = 0x7C; //Ptr to the object's per-frame update function
+static const u32 cStadiumObj_SlotIndex = 0x9C; //u8. Index into the stadium's placement table. Used as the Hazard ID
+static const u32 cStadiumObj_Pos_X     = 0xA0; //float
+static const u32 cStadiumObj_Pos_Y     = 0xA4; //float
+static const u32 cStadiumObj_Pos_Z     = 0xA8; //float
+static const u32 cUpdateFn_YoshiParkPlant = 0x80722C1C; //controlYoshiParkPlants
+static const u32 cUpdateFn_PalaceChomp    = 0x80712FE8; //palaceChainChompControl
+static const u32 cUpdateFn_PalaceTornado  = 0x8070F9AC; //palaceNadoLogic
+static const u32 cUpdateFn_PalaceSandStar = 0x8070E9C4; //warioPalaceSandStarRelated
+
+//Yoshi Park plants
+static const u8  cStadiumId_YoshiPark = 0x3;
 static const u32 cPlant_Scale       = 0xB4; //float. 0.2 when retracted, grows to ~1.3
 static const u32 cPlant_SpitAngle   = 0xBC; //float. Degrees, chosen when the ball is eaten
 static const u32 cPlant_State       = 0xC4; //u8. See cPlantState_*
@@ -718,8 +722,39 @@ static const u8 cPlantType_Yellow = 1;
 static const std::set<u8> cHazardBounceCollisionCodes = {0x10, 0x11, 0x12, 0x13, 0x14, 0x20, 0x21, 0x30, 0x40, 0x60, 0x61};
 //How far (XZ) a fielder/ball can be from a plant's base and still be attributed to it.
 //The plant's mouth sits up to ~5x its scale away from its base
-static const float cHazard_KnockoutRadius = 12.0f;
-static const float cHazard_BounceRadius   = 10.0f;
+static const float cHazard_PlantKnockoutRadius = 12.0f;
+static const float cHazard_PlantBounceRadius   = 10.0f;
+
+//Wario Palace chain chomps
+static const u8  cStadiumId_WarioPalace = 0x2;
+static const u32 cChomp_Velo_X           = 0xAC; //float. Set when an attack starts
+static const u32 cChomp_Velo_Y           = 0xB0; //float
+static const u32 cChomp_Velo_Z           = 0xB4; //float
+static const u32 cChomp_TargetAngle      = 0xBC; //float. Degrees the attack is aimed at
+static const u32 cChomp_AttacksRemaining = 0xC8; //s16. Reset to 1 each play
+static const u32 cChomp_State            = 0xCA; //u8. See cChompState_*
+static const u8 cChompState_Sleeping      = 0;
+static const u8 cChompState_Awake         = 1;
+static const u8 cChompState_WakingUp      = 2;
+static const u8 cChompState_Stalking      = 3; //Hopping toward the ball
+static const u8 cChompState_Attacking     = 4; //Lunging. Knocks the ball/fielders within cHazard_ChompRadius
+static const u8 cChompState_ReturningHome = 5;
+static const u32 aChomp_BallHitMarker = 0x8086B979; //u8. Non-zero while the "chomp knocked the ball" marker is displayed
+static const float cHazard_ChompRadius            = 4.5f; //The chomp hits balls and fielders within this distance
+static const float cHazard_ChompAttributionRadius = 8.0f;
+
+//Wario Palace tornados
+static const u32 cTornado_ReleaseAngle = 0xCC; //float. Degrees the ball is thrown out at, chosen when captured
+static const u32 cTornado_SpinDir      = 0xD0; //s8. +1 or -1, chosen when triggered
+static const u32 cTornado_State        = 0xD1; //u8. See cTornadoState_*
+static const u8 cTornadoState_Idle         = 0;
+static const u8 cTornadoState_Triggered    = 1; //Ball came within 5m, tornado spins up
+static const u8 cTornadoState_BallCaptured = 2; //Ball is being spun around the tornado
+static const u8 cTornadoState_WindingDown  = 3; //Ball released (or never entered)
+
+//Wario Palace sand stars
+static const u32 cSandStar_HitAnimPtr = 0x8C; //Ptr. Non-zero while the hit animation plays
+static const u32 cSandStar_HitFlag    = 0xA4; //u8. 1 once the star has been collected (star skills on)
 
 
 class StatTracker{
@@ -1249,28 +1284,38 @@ public:
     EVENT_STATE m_event_state = EVENT_STATE::INIT_EVENT;
     EVENT_STATE m_event_state_prev = EVENT_STATE::UNDEFINED;
 
-    //Per-frame snapshot of each Yoshi Park plant so hazard events can be logged on state changes
-    struct PlantSnapshot {
-        u8 slot = 0xFF;
-        u8 state = 0;
-        u8 type = 0;
-        u8 ball_in_mouth = 0;
-        u8 phase = 0;
-        u16 parent_sequence = 0; //Group for the current pop-up. 0 = none assigned yet
+    //Per-frame snapshot of a stadium hazard object so events can be logged on state changes
+    struct HazardObjSnapshot {
+        bool valid = false;
+        u8 kind = 0xFF;   //HAZARD_TYPE. Plants use RED_PLANT for both colours, see aux
+        u8 slot = 0xFF;   //Hazard ID
+        u8 state = 0;     //Plant/chomp/tornado state. Sand star: hit animation playing
+        u8 aux = 0;       //Plant colour / tornado spin direction
+        u8 flag = 0;      //Plant ball-in-mouth / sand star collected
+        u32 ptr = 0;      //Sand star hit animation ptr
+        float x = 0;
+        float y = 0;
+        float z = 0;
+        float scale = 0;  //Plant size
+        float angle = 0;  //Plant spit angle / chomp target angle / tornado release angle
+        u16 parent_sequence = 0;         //Group for the current activation. 0 = none assigned yet
+        std::array<u32, 3> aux_pos = {}; //Tornado: where the ball was when it triggered
+        u16 aux_frame = 0;               //Tornado: frame it triggered
     };
     struct HazardTrackerState {
         bool initialized = false;
-        std::array<PlantSnapshot, cYoshiPark_MaxPlants> plants;
+        std::array<HazardObjSnapshot, cStadiumObj_MaxCount> objects;
         std::array<u8, cRosterSize> fielder_knockout = {};
         u16 next_parent_sequence = 1;
         s16 frames_since_last_bounce = -1;
+        u8 chomp_ball_marker = 0;
 
         //Events waiting a few frames for the ball velocity to settle before it is recorded
         struct PendingVelocity {
             size_t event_index;
-            u8 plant_index;
+            u32 obj_index;
             int frames_waited = 0;
-            bool wait_for_spit_countdown = false;
+            bool wait_for_hold_countdown = false; //Plant spit / tornado release hold the ball for a few frames
         };
         std::vector<PendingVelocity> pending_velocity;
     } m_hazard_state;
@@ -1312,10 +1357,11 @@ public:
     void logContactResult(const Core::CPUThreadGuard& guard, Contact* in_contact);
     void logFinalResults(const Core::CPUThreadGuard& guard, Event& in_event);
 
-    //Stadium hazards (Yoshi Park plants for now)
+    //Stadium hazards. Yoshi Park plants, Wario Palace chomps/tornados/sand stars
     void resetHazardTracking();
     void logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in_contact);
     HazardEvent& addHazardEvent(Contact* in_contact, u8 hazard_type, u8 hazard_id, u8 interaction, u16 parent_sequence, u16 frame);
+    void addFielderToHazardEvent(const Core::CPUThreadGuard& guard, HazardEvent& in_event, u8 fielder_pos);
     std::string getHazardEventsJSON(std::vector<HazardEvent>& in_events, std::string indent, bool inDecode);
     //void logManualSelectLocks(Event& in_event);
 
