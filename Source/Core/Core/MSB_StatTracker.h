@@ -693,7 +693,7 @@ static const u32 aAB_FramesSinceLastBounce        = 0x808926AC; //s16. -1 at con
 static const u32 aAB_FrameCountdownAfterPlantSpit = 0x8089272D; //u8. Set to 3 when a plant releases the ball, counts down to 0
 
 //Fields shared by every stadium object we track. Each object's update function pointer identifies what it is
-static const u32 cStadiumObj_MaxCount  = 32;   //Yoshi Park and Wario Palace allocate 20 objects, Bowser Castle 32
+static const u32 cStadiumObj_MaxCount  = 52;   //Yoshi Park and Wario Palace allocate 20 objects, DK Jungle 25, Bowser Castle 32, Peach Garden 52
 static const u32 cStadiumObj_UpdateFn  = 0x7C; //Ptr to the object's per-frame update function
 static const u32 cStadiumObj_OnCollisionFn = 0x80; //Ptr to the function run when the ball hits the object's mesh
 static const u32 cStadiumObj_SlotIndex = 0x9C; //u8. Index into the stadium's placement table. Used as the Hazard ID
@@ -840,6 +840,28 @@ static const u8 cKlaptrapState_Attached   = 3; //Biting a fielder
 static const u8 cKlaptrapState_Launched   = 4; //Knocked off by the ball or a barrel
 static const u8 cKlaptrapState_RunOver    = 5; //Flattened by a barrel
 static const u8 cKlaptrapState_Despawning = 6;
+
+//Peach Garden. 52 block objects. They have no position fields, so the placement table is read instead
+static const u8  cStadiumId_PeachGarden = 0x4;
+static const u32 cGardenObj_SlotIndex = 0xA0; //u8. Block index, also the index into the placement table. Used as the Hazard ID
+static const u32 cGardenObj_Type      = 0xA1; //u8. Current identity, see cBlockType_*. Mystery blocks rewrite it to their variant when first hit
+static const u32 cGardenObj_Variant   = 0xA2; //u8. Identity rolled at load
+static const u32 cGardenObj_Flags     = 0x90; //u8. Bit 7 visible, bit 6 collidable
+static const u8 cBlockType_Brick   = 0; //Breaks and awards a star
+static const u8 cBlockType_HitFx   = 1; //Only plays a hit effect
+static const u8 cBlockType_Note    = 2; //Knocks the ball back
+static const u8 cBlockType_Mystery = 3; //Reveals its variant when hit
+static const u32 aGarden_BlockTable      = 0x807CD098; //X/Y/Z floats then rotation, 0x14 per block
+static const u32 cGarden_BlockTableEntry = 0x14;
+static const u32 cOnCollisionFn_GardenBrick   = 0x80738F0C; //blockOnHit_Brick
+static const u32 cOnCollisionFn_GardenHitFx   = 0x80738A84; //stadiumHitFxOnCollision
+static const u32 cOnCollisionFn_GardenNote    = 0x80738800; //blockOnHit_Note
+static const u32 cOnCollisionFn_GardenMystery = 0x80738C30; //blockOnHit_Mystery
+//Every block hit posts a marker here: index = 2 * variant + (ball in the air). Non-zero while the hit effect is displayed
+static const u32 aGarden_BlockHitPending  = 0x8086C700; //u8[6]
+static const u32 cGarden_HitMarkerCount   = 6;
+static const u32 aStadiumObj_BlockHitActive = 0x8089622F; //u8. 1 while a note block is pushing the ball (also used by the tornado)
+static const float cHazard_BlockAttributionRadius = 8.0f;
 
 
 class StatTracker{
@@ -1399,6 +1421,7 @@ public:
         std::array<u8, cRosterSize> fielder_on_fire = {};
         std::array<u8, cCastle_HitMarkerCount> castle_hit_markers = {};
         std::array<u8, cJungle_MaxCannons> jungle_cannon_state = {};
+        std::array<u8, cGarden_HitMarkerCount> garden_hit_markers = {};
 
         //Events waiting a few frames for the ball velocity to settle before it is recorded
         struct PendingVelocity {
@@ -1410,6 +1433,7 @@ public:
             float prev_x = 0;
             float prev_y = 0;
             float prev_z = 0;
+            bool wait_for_block_knockback = false; //Note blocks push the ball for a few frames first
         };
         std::vector<PendingVelocity> pending_velocity;
     } m_hazard_state;
@@ -1452,7 +1476,7 @@ public:
     void logFinalResults(const Core::CPUThreadGuard& guard, Event& in_event);
 
     //Stadium hazards. Yoshi Park plants, Wario Palace chomps/tornados/sand stars, Bowser Castle thwomps/fireballs/star pads,
-    //DK Jungle barrels/klaptraps
+    //DK Jungle barrels/klaptraps, Peach Garden blocks
     void resetHazardTracking();
     void logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in_contact);
     HazardEvent& addHazardEvent(Contact* in_contact, u8 hazard_type, u8 hazard_id, u8 interaction, u16 parent_sequence, u16 frame);

@@ -1795,10 +1795,13 @@ void StatTracker::addFielderToHazardEvent(const Core::CPUThreadGuard& guard, Haz
 //a star when hit (Ball Contact).
 //DK Jungle: cannons fire barrels (Projectile, aimed at where the ball will land) that knock out fielders (Fielder Contact) and
 //bounce the ball (Ball Contact). Klaptraps bite fielders (Fielder Contact) and are knocked off when the ball hits them (Ball Contact).
+//Peach Garden: the ball hits blocks (Ball Contact). Bricks break and award a star, note blocks knock the ball back, mystery blocks
+//reveal what they are.
 //Every object lives in the game's stadium object array and is identified by its update function pointer.
 void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in_contact){
     if (m_game_info.stadium != cStadiumId_YoshiPark && m_game_info.stadium != cStadiumId_WarioPalace
-     && m_game_info.stadium != cStadiumId_BowserCastle && m_game_info.stadium != cStadiumId_DKJungle) { return; }
+     && m_game_info.stadium != cStadiumId_BowserCastle && m_game_info.stadium != cStadiumId_DKJungle
+     && m_game_info.stadium != cStadiumId_PeachGarden) { return; }
     //The hazards only update while the game reports a live ball (cGameControlState 0x2)
     if (PowerPC::MMU::HostRead_U8(guard, aGameControlStateCurr) != 0x2) { return; }
 
@@ -1826,6 +1829,11 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
     s16 frames_since_bounce = static_cast<s16>(PowerPC::MMU::HostRead_U16(guard, aAB_FramesSinceLastBounce));
     u8 hold_countdown = PowerPC::MMU::HostRead_U8(guard, aAB_FrameCountdownAfterPlantSpit);
     u8 chomp_ball_marker = PowerPC::MMU::HostRead_U8(guard, aChomp_BallHitMarker);
+    u8 block_hit_active = PowerPC::MMU::HostRead_U8(guard, aStadiumObj_BlockHitActive);
+    std::array<u8, cGarden_HitMarkerCount> garden_hit_markers = {};
+    for (u32 n = 0; n < cGarden_HitMarkerCount; ++n){
+        garden_hit_markers[n] = PowerPC::MMU::HostRead_U8(guard, aGarden_BlockHitPending + n);
+    }
     std::array<u8, cRosterSize> on_fire = {};
     for (u8 pos = 0; pos < cRosterSize; ++pos){
         on_fire[pos] = PowerPC::MMU::HostRead_U8(guard, aFielder_OnFire + (pos * cFielder_Offset));
@@ -1874,6 +1882,15 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
             default:                        return "\"Unknown\"";
         }
     };
+    auto blockTypeName = [](u8 in_type) -> std::string {
+        switch (in_type){
+            case cBlockType_Brick:   return "\"Brick\"";
+            case cBlockType_HitFx:   return "\"Hit FX\"";
+            case cBlockType_Note:    return "\"Note\"";
+            case cBlockType_Mystery: return "\"Mystery\"";
+            default:                 return "\"Unknown\"";
+        }
+    };
 
     auto isCastleKind = [](u8 in_kind){
         return in_kind == static_cast<u8>(HAZARD_TYPE::THWOMP) || in_kind == static_cast<u8>(HAZARD_TYPE::FIREBALL) || in_kind == static_cast<u8>(HAZARD_TYPE::STAR_PAD);
@@ -1894,7 +1911,9 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
     for (auto it = m_hazard_state.pending_velocity.begin(); it != m_hazard_state.pending_velocity.end();){
         if (it->from_object_delta) { ++it; continue; } //Resolved once this frame's object positions are read
         ++it->frames_waited;
-        bool ready = it->wait_for_hold_countdown ? (hold_countdown == 0 && it->frames_waited >= cHeldVelocityMinFrames) : true;
+        bool ready = it->wait_for_hold_countdown ? (hold_countdown == 0 && it->frames_waited >= cHeldVelocityMinFrames)
+                   : it->wait_for_block_knockback ? (block_hit_active == 0 && it->frames_waited >= 1)
+                   : true;
         if (ready || it->frames_waited >= cVelocityMaxWaitFrames){
             in_contact->hazard_events[it->event_index].result_velocity = readBallVelocity();
             it = m_hazard_state.pending_velocity.erase(it);
@@ -1967,6 +1986,25 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
             if (cannon_slot < cJungle_MaxCannons) { cannon_state[cannon_slot] = PowerPC::MMU::HostRead_U8(guard, obj + cCannon_State); }
             continue;
         }
+        else if (m_game_info.stadium == cStadiumId_PeachGarden){
+            //Blocks. A broken brick loses its callback, so keep tracking anything that was a block last frame
+            u8 block_type = PowerPC::MMU::HostRead_U8(guard, obj + cGardenObj_Type);
+            bool is_block = (on_collision_fn == cOnCollisionFn_GardenBrick || on_collision_fn == cOnCollisionFn_GardenHitFx
+                          || on_collision_fn == cOnCollisionFn_GardenNote || on_collision_fn == cOnCollisionFn_GardenMystery
+                          || m_hazard_state.objects[i].kind == static_cast<u8>(HAZARD_TYPE::BLOCK));
+            if (!is_block || block_type > cBlockType_Mystery) { continue; }
+            snap.kind  = static_cast<u8>(HAZARD_TYPE::BLOCK);
+            snap.state = PowerPC::MMU::HostRead_U8(guard, obj + cGardenObj_Flags);
+            snap.aux   = block_type;
+            snap.flag  = PowerPC::MMU::HostRead_U8(guard, obj + cGardenObj_Variant);
+            snap.valid = true;
+            snap.slot  = PowerPC::MMU::HostRead_U8(guard, obj + cGardenObj_SlotIndex);
+            u32 table_entry = aGarden_BlockTable + (snap.slot * cGarden_BlockTableEntry);
+            snap.x = floatConverter(PowerPC::MMU::HostRead_U32(guard, table_entry));
+            snap.y = floatConverter(PowerPC::MMU::HostRead_U32(guard, table_entry + 4));
+            snap.z = floatConverter(PowerPC::MMU::HostRead_U32(guard, table_entry + 8));
+            continue;
+        }
         else {
             continue; //Not a hazard we track
         }
@@ -2007,6 +2045,7 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
         m_hazard_state.fielder_on_fire = on_fire;
         m_hazard_state.castle_hit_markers = castle_hit_markers;
         m_hazard_state.jungle_cannon_state = cannon_state;
+        m_hazard_state.garden_hit_markers = garden_hit_markers;
         m_hazard_state.initialized = true;
         return;
     }
@@ -2349,6 +2388,49 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
         std::cout << "Hazard: Fireball from flame " << std::to_string(objects[closest].slot) << " burned fielder pos " << std::to_string(pos) << ". Frame=" << std::to_string(frame) << "\n";
     }
 
+    //=== Ball hit a block === Every block hit posts a marker whose index says which kind of block it was
+    for (u32 n = 0; n < cGarden_HitMarkerCount; ++n){
+        if (m_hazard_state.garden_hit_markers[n] != 0 || garden_hit_markers[n] == 0) { continue; }
+        u8 hit_variant = static_cast<u8>(n / 2);
+        float ball_y = floatConverter(ball_pos[1]);
+
+        //Closest block of that kind to the ball. The table stores the block's Y with the opposite sign to the ball's
+        int closest = -1;
+        float closest_dist = cHazard_BlockAttributionRadius;
+        for (u32 i = 0; i < obj_count; ++i){
+            if (!objects[i].valid || objects[i].kind != static_cast<u8>(HAZARD_TYPE::BLOCK) || ball_contact_logged[i]) { continue; }
+            if (objects[i].flag != hit_variant && m_hazard_state.objects[i].aux != cBlockType_Mystery) { continue; }
+            float dx = ball_x - objects[i].x;
+            float dy = std::fabs(ball_y) - std::fabs(objects[i].y);
+            float dz = ball_z - objects[i].z;
+            float dist = std::sqrt((dx * dx) + (dy * dy) + (dz * dz));
+            if (dist < closest_dist){
+                closest = i;
+                closest_dist = dist;
+            }
+        }
+        if (closest < 0){
+            std::cout << "Hazard: Ball hit a block of kind " << std::to_string(hit_variant) << " but none is nearby\n";
+            continue;
+        }
+
+        HazardObjSnapshot& prev = m_hazard_state.objects[closest];
+        HazardObjSnapshot& now  = objects[closest];
+        bool broken = ((prev.state & 0x80) != 0 && (now.state & 0x80) == 0 && now.flag == cBlockType_Brick);
+        HazardEvent& hazard_event = addHazardEvent(in_contact, static_cast<u8>(HAZARD_TYPE::BLOCK), now.slot,
+                                                   static_cast<u8>(HAZARD_INTERACTION::BALL_CONTACT), getParentSequence(prev), frame);
+        readBallPos(hazard_event);
+        hazard_event.details.push_back({"Block Type", blockTypeName(now.flag), ""});
+        hazard_event.details.push_back({"Broken", broken ? "true" : "false", ""});
+        hazard_event.details.push_back({"Revealed", (prev.aux == cBlockType_Mystery && now.aux != cBlockType_Mystery) ? "true" : "false", ""});
+        hazard_event.details.push_back({"Visible", ((now.state & 0x80) != 0) ? "true" : "false", ""});
+        if (broken) { hazard_event.details.push_back({"Star Awarded", m_game_info.star_skills_on ? "true" : "false", ""}); }
+        //Note blocks push the ball for a few frames before it flies off
+        m_hazard_state.pending_velocity.push_back({in_contact->hazard_events.size() - 1, static_cast<u32>(closest), 0, false, false, 0, 0, 0, (now.flag == cBlockType_Note)});
+        ball_contact_logged[closest] = true;
+        std::cout << "Hazard: Ball hit block " << std::to_string(now.slot) << " " << blockTypeName(now.flag) << (broken ? " and broke it" : "") << ". Frame=" << std::to_string(frame) << "\n";
+    }
+
     //=== Fielder knockouts === Red plants and chomps knock out fielders that get too close. Nothing else knocks
     //fielders out in these stadiums while one is active, so a new knockout is attributed to the closest active one
     for (u8 pos = 0; pos < cRosterSize; ++pos){
@@ -2478,6 +2560,7 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
     m_hazard_state.fielder_on_fire = on_fire;
     m_hazard_state.castle_hit_markers = castle_hit_markers;
     m_hazard_state.jungle_cannon_state = cannon_state;
+    m_hazard_state.garden_hit_markers = garden_hit_markers;
 }
 
 //Writes the "Hazard Events" list for a contact. No trailing newline so the caller controls the separator
