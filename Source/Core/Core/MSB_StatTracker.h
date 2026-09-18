@@ -654,6 +654,7 @@ static const u32 aFielder_Action = 0x8088F5C1; //Pitcher. 2=Slide, 3=Walljump
 static const u32 aFielder_Bobble = 0x8088F5C0; //Pitcher
 static const u32 aFielder_Knockout = 0x8088F578; //Pitcher
 static const u32 aFielder_OnFire = 0x8088F577; //Pitcher. 1 while burning from a Bowser Castle fireball
+static const u32 aFielder_AttachedKlaptraps = 0x8088F57F; //Pitcher. Number of DK Jungle klaptraps biting this fielder
 static const u32 aFielder_Pos_X = 0x8088F368; //Pitcher
 static const u32 aFielder_Pos_Z = 0x8088F370; //Pitcher
 static const u32 aFielder_Pos_Y = 0x8088F374; //Pitcher
@@ -803,6 +804,42 @@ static const u8 cStarPadType_Wall  = 4;
 static const u8 cStarPadType_Floor = 5;
 static const u8 cStarPadType_Used  = 6;
 static const float cHazard_StarPadAttributionRadius = 10.0f;
+
+//DK Jungle. Objects carry a type byte. Unused slots share the barrel's type byte, so the barrel's collision callback is checked too
+static const u8  cStadiumId_DKJungle = 0x5;
+static const u32 cJungleObj_Type = 0x9D; //u8. See cJungleType_*
+static const u8 cJungleType_Barrel   = 0;
+static const u8 cJungleType_Cannon   = 1;
+static const u8 cJungleType_Klaptrap = 2;
+static const u32 cOnCollisionFn_JungleBarrel = 0x80730708;
+static const u32 cUpdateFn_JungleKlaptrap    = 0x80730038; //klaptrapControl
+//Barrels. Each cannon owns one barrel with the same slot index. A play has a 36% chance of a barrel being fired
+static const u32 cBarrel_Yaw   = 0xB4; //float. Degrees, aimed at the ball when launched
+static const u32 cBarrel_State = 0xC1; //u8. See cBarrelState_*
+static const u8 cBarrelState_Idle     = 0;
+static const u8 cBarrelState_Rolling  = 1;
+static const u8 cBarrelState_Breaking = 2; //Hit a wall
+static const u32 cCannon_State = 0xC4; //u8. 0=Idle, 1=Armed for a grounder (fires once the ball reaches the outfield), 2=Armed for a fly ball (fires as it comes down), 3=Launched
+static const u8 cCannonState_ArmedGrounder = 1;
+static const u8 cCannonState_ArmedFlyBall  = 2;
+static const u32 aJungle_BarrelTarget_X = 0x8086C364; //float. Where the last launched barrel was aimed (bezier control point 3)
+static const u32 aJungle_BarrelTarget_Y = 0x8086C368;
+static const u32 aJungle_BarrelTarget_Z = 0x8086C36C;
+static const float cHazard_BarrelAttributionRadius = 6.0f; //Barrels hit fielders within a 3.0 x 1.75 box
+static const float cHazard_BarrelBounceRadius      = 5.0f;
+static const u32 cJungle_MaxCannons = 8;
+//Klaptraps
+static const u32 cKlaptrap_FlightYaw       = 0xB8; //float. Radians, direction it is knocked off in
+static const u32 cKlaptrap_AttachedFielder = 0xC1; //u8. Fielder slot it is biting, 0xFF for none
+static const u32 cKlaptrap_State           = 0xC6; //u8. See cKlaptrapState_*
+static const u32 cKlaptrap_StarAwarded     = 0xC8; //u8. 1 once the ball knocked it off and awarded a star
+static const u8 cKlaptrapState_Turning    = 0;
+static const u8 cKlaptrapState_Walking    = 1;
+static const u8 cKlaptrapState_Chasing    = 2;
+static const u8 cKlaptrapState_Attached   = 3; //Biting a fielder
+static const u8 cKlaptrapState_Launched   = 4; //Knocked off by the ball or a barrel
+static const u8 cKlaptrapState_RunOver    = 5; //Flattened by a barrel
+static const u8 cKlaptrapState_Despawning = 6;
 
 
 class StatTracker{
@@ -1361,6 +1398,7 @@ public:
         u8 chomp_ball_marker = 0;
         std::array<u8, cRosterSize> fielder_on_fire = {};
         std::array<u8, cCastle_HitMarkerCount> castle_hit_markers = {};
+        std::array<u8, cJungle_MaxCannons> jungle_cannon_state = {};
 
         //Events waiting a few frames for the ball velocity to settle before it is recorded
         struct PendingVelocity {
@@ -1368,6 +1406,10 @@ public:
             u32 obj_index;
             int frames_waited = 0;
             bool wait_for_hold_countdown = false; //Plant spit / tornado release hold the ball for a few frames
+            bool from_object_delta = false;       //Barrels: velocity is the object's movement over the next frame
+            float prev_x = 0;
+            float prev_y = 0;
+            float prev_z = 0;
         };
         std::vector<PendingVelocity> pending_velocity;
     } m_hazard_state;
@@ -1409,7 +1451,8 @@ public:
     void logContactResult(const Core::CPUThreadGuard& guard, Contact* in_contact);
     void logFinalResults(const Core::CPUThreadGuard& guard, Event& in_event);
 
-    //Stadium hazards. Yoshi Park plants, Wario Palace chomps/tornados/sand stars, Bowser Castle thwomps/fireballs/star pads
+    //Stadium hazards. Yoshi Park plants, Wario Palace chomps/tornados/sand stars, Bowser Castle thwomps/fireballs/star pads,
+    //DK Jungle barrels/klaptraps
     void resetHazardTracking();
     void logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in_contact);
     HazardEvent& addHazardEvent(Contact* in_contact, u8 hazard_type, u8 hazard_id, u8 interaction, u16 parent_sequence, u16 frame);
