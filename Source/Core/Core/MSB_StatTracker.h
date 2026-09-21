@@ -460,6 +460,8 @@ static const u32 aGameControlStatePrev = 0x80892aab;
 
 static const u32 aAB_PitchThrown     = 0x8088A81B;
 static const u32 aAB_ContactResult   = 0x808926B3; //0=InAir, 1=Landed, 2=Fielded, 3=Caught, FF=Foul
+static const u8 cContactResult_Fielded = 2; //A fielder has the ball. Hazards that act on the ball skip it while this is set
+static const u8 cContactResult_Caught  = 3;
 static const u32 aAB_ContactMade     = 0x808909a1; //Boolean, from Roeming
 static const u32 aAB_PickoffAttempt  = 0x80892857; //0=None, 1=Pickoff, 2=Steal
 
@@ -654,7 +656,7 @@ static const u32 aFielder_Action = 0x8088F5C1; //Pitcher. 2=Slide, 3=Walljump
 static const u32 aFielder_Bobble = 0x8088F5C0; //Pitcher
 static const u32 aFielder_Knockout = 0x8088F578; //Pitcher
 static const u32 aFielder_OnFire = 0x8088F577; //Pitcher. 1 while burning from a Bowser Castle fireball
-static const u32 aFielder_AttachedKlaptraps = 0x8088F57F; //Pitcher. Number of DK Jungle klaptraps biting this fielder
+static const u32 aFielder_AttachedKlaptraps = 0x8088F57F; //Pitcher. Running count of DK Jungle klaptraps biting this fielder. Persists across at bats
 static const u32 aFielder_Pos_X = 0x8088F368; //Pitcher
 static const u32 aFielder_Pos_Z = 0x8088F370; //Pitcher
 static const u32 aFielder_Pos_Y = 0x8088F374; //Pitcher
@@ -707,7 +709,6 @@ static const u32 cUpdateFn_PalaceSandStar = 0x8070E9C4; //warioPalaceSandStarRel
 
 //Yoshi Park plants
 static const u8  cStadiumId_YoshiPark = 0x3;
-static const u32 cPlant_Scale       = 0xB4; //float. 0.2 when retracted, grows to ~1.3
 static const u32 cPlant_SpitAngle   = 0xBC; //float. Degrees, chosen when the ball is eaten
 static const u32 cPlant_State       = 0xC4; //u8. See cPlantState_*
 static const u32 cPlant_Type        = 0xC8; //u8. See cPlantType_*
@@ -733,17 +734,16 @@ static const u8  cStadiumId_WarioPalace = 0x2;
 static const u32 cChomp_Velo_X           = 0xAC; //float. Set when an attack starts
 static const u32 cChomp_Velo_Y           = 0xB0; //float
 static const u32 cChomp_Velo_Z           = 0xB4; //float
-static const u32 cChomp_TargetAngle      = 0xBC; //float. Degrees the attack is aimed at
-static const u32 cChomp_AttacksRemaining = 0xC8; //s16. Reset to 1 each play
 static const u32 cChomp_State            = 0xCA; //u8. See cChompState_*
 static const u8 cChompState_Sleeping      = 0;
 static const u8 cChompState_Awake         = 1;
 static const u8 cChompState_WakingUp      = 2;
 static const u8 cChompState_Stalking      = 3; //Hopping toward the ball
-static const u8 cChompState_Attacking     = 4; //Lunging. Knocks the ball/fielders within cHazard_ChompRadius
+static const u8 cChompState_Attacking     = 4; //Lunging. Hits balls/fielders within 4.5. Also ends when the chain reaches 14.25
 static const u8 cChompState_ReturningHome = 5;
-static const u32 aChomp_BallHitMarker = 0x8086B979; //u8. Non-zero while the "chomp knocked the ball" marker is displayed
-static const float cHazard_ChompRadius            = 4.5f; //The chomp hits balls and fielders within this distance
+static const u32 aChomp_BallHitMarker = 0x8086B979; //u8. chainChompKnockedBall. chomp_attack sets this to 1 only on the frame it
+                                                    //knocks the ball, the marker draw sets it to 2 and then back to 0. Slot 1 of
+                                                    //the stadium hit-marker array at 0x8086B978 (hit positions at 0x8086B900)
 static const float cHazard_ChompAttributionRadius = 8.0f;
 
 //Wario Palace tornados
@@ -794,8 +794,10 @@ static const u32 cFlame_State             = 0xBD; //u8. See cFlameState_*
 static const u8 cFlameState_Idle      = 0;
 static const u8 cFlameState_Flying    = 1;
 static const u8 cFlameState_Exploding = 2; //Only reached by burning a fielder
-static const u8 cFlameState_Ended     = 3; //Hit the ground or the ball
-static const float cHazard_FlameRadius            = 2.6f; //Burns fielders and is put out by the ball within this distance
+static const u8 cFlameState_Ended     = 3; //Hit the ground OR the ball - flameControl ends both the same way, so the
+                                           //transition on its own is not proof the ball was involved
+static const float cHazard_FlameRadius            = 2.6f; //The game's own radius: flameControl puts the fireball out when the
+                                                          //ball is within this in 3D, and it burns fielders within it too
 static const float cHazard_FlameAttributionRadius = 8.0f;
 //Fireballs launch constantly, so logging every shot is off. The code is kept so it can be turned on if it turns out to be useful
 static constexpr bool cHazard_LogFlameShots = false;
@@ -829,7 +831,6 @@ static const float cHazard_BarrelAttributionRadius = 6.0f; //Barrels hit fielder
 static const float cHazard_BarrelBounceRadius      = 5.0f;
 static const u32 cJungle_MaxCannons = 8;
 //Klaptraps
-static const u32 cKlaptrap_FlightYaw       = 0xB8; //float. Radians, direction it is knocked off in
 static const u32 cKlaptrap_AttachedFielder = 0xC1; //u8. Fielder slot it is biting, 0xFF for none
 static const u32 cKlaptrap_State           = 0xC6; //u8. See cKlaptrapState_*
 static const u32 cKlaptrap_StarAwarded     = 0xC8; //u8. 1 once the ball knocked it off and awarded a star
@@ -959,7 +960,9 @@ public:
         u32 pos_z = 0;
         std::optional<std::array<u32, 3>> result_velocity; //Ball velocity after the interaction
         std::optional<std::array<u32, 3>> target;          //Target coords for projectiles
-        std::optional<u8> fielder;                         //Roster loc of the fielder involved
+        std::optional<u8> fielder_roster_loc;              //Roster loc of the fielder involved
+        std::optional<u8> fielder_pos;                     //Fielding position of the fielder involved
+        std::optional<u8> fielder_char_id;                 //Char id of the fielder involved
 
         //Extra hazard-specific info
         struct Detail {
@@ -1403,13 +1406,15 @@ public:
         float x = 0;
         float y = 0;
         float z = 0;
-        float scale = 0;  //Plant size
-        float angle = 0;  //Plant spit angle / chomp target angle / tornado release angle
+        float angle = 0;  //Plant spit angle / tornado release angle / barrel launch yaw
         u16 parent_sequence = 0;         //Group for the current activation. 0 = none assigned yet
         std::array<u32, 3> aux_pos = {}; //Tornado: where the ball was when it triggered
-        u16 aux_frame = 0;               //Tornado: frame it triggered
         size_t aux_event = 0;            //Thwomp: index of the drop event waiting for its landing spot
         bool aux_event_valid = false;
+        size_t fielder_event = 0;        //Barrel: index of its fielder knockout event
+        bool fielder_event_valid = false;
+        u8 detached_klaptraps = 0;       //Barrel: klaptraps it knocked off fielders this activation
+        u8 ran_over_klaptraps = 0;       //Barrel: klaptraps it flattened this activation
     };
     struct HazardTrackerState {
         bool initialized = false;

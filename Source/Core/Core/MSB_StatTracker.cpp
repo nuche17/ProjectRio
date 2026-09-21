@@ -1780,9 +1780,9 @@ void StatTracker::addFielderToHazardEvent(const Core::CPUThreadGuard& guard, Haz
     in_event.pos_x = PowerPC::MMU::HostRead_U32(guard, aFielder_Pos_X + (fielder_pos * cFielder_Offset));
     in_event.pos_y = PowerPC::MMU::HostRead_U32(guard, aFielder_Pos_Y + (fielder_pos * cFielder_Offset));
     in_event.pos_z = PowerPC::MMU::HostRead_U32(guard, aFielder_Pos_Z + (fielder_pos * cFielder_Offset));
-    in_event.fielder = PowerPC::MMU::HostRead_U8(guard, aFielder_RosterLoc + (fielder_pos * cFielder_Offset));
-    in_event.details.push_back({"Fielder Position", std::to_string(fielder_pos), "Position"});
-    in_event.details.push_back({"Fielder Character", std::to_string(PowerPC::MMU::HostRead_U8(guard, aFielder_CharId + (fielder_pos * cFielder_Offset))), "Character"});
+    in_event.fielder_roster_loc = PowerPC::MMU::HostRead_U8(guard, aFielder_RosterLoc + (fielder_pos * cFielder_Offset));
+    in_event.fielder_pos        = fielder_pos;
+    in_event.fielder_char_id    = PowerPC::MMU::HostRead_U8(guard, aFielder_CharId + (fielder_pos * cFielder_Offset));
 }
 
 //Polls the stadium hazards every frame the ball is live and records an event whenever one interacts with the ball or a fielder.
@@ -1821,7 +1821,11 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                                    PowerPC::MMU::HostRead_U32(guard, aAB_BallPos_Y),
                                    PowerPC::MMU::HostRead_U32(guard, aAB_BallPos_Z)};
     float ball_x = floatConverter(ball_pos[0]);
+    float ball_y = floatConverter(ball_pos[1]);
     float ball_z = floatConverter(ball_pos[2]);
+    //Hazards that knock the ball around are skipped by the game while a fielder is holding it
+    u8 ball_contact_result = PowerPC::MMU::HostRead_U8(guard, aAB_ContactResult);
+    bool fielder_has_ball = (ball_contact_result == cContactResult_Fielded || ball_contact_result == cContactResult_Caught);
     std::array<u8, cRosterSize> knockouts = {};
     for (u8 pos = 0; pos < cRosterSize; ++pos){
         knockouts[pos] = PowerPC::MMU::HostRead_U8(guard, aFielder_Knockout + (pos * cFielder_Offset));
@@ -1866,21 +1870,19 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
     auto waitForVelocity = [&](u32 obj_index, bool wait_for_hold_countdown){
         m_hazard_state.pending_velocity.push_back({in_contact->hazard_events.size() - 1, obj_index, 0, wait_for_hold_countdown});
     };
+    //Adds a detail, or overwrites it if it is already there. For counts that grow over several frames
+    auto setHazardDetail = [](HazardEvent& in_event, const std::string& in_key, const std::string& in_value){
+        for (auto& detail : in_event.details){
+            if (detail.key == in_key){
+                detail.value = in_value;
+                return;
+            }
+        }
+        in_event.details.push_back({in_key, in_value, ""});
+    };
     auto floatToBits = [&](float in_value){
         float_converter.fnum = in_value;
         return float_converter.num;
-    };
-    auto klaptrapStateName = [](u8 in_state) -> std::string {
-        switch (in_state){
-            case cKlaptrapState_Turning:    return "\"Turning\"";
-            case cKlaptrapState_Walking:    return "\"Walking\"";
-            case cKlaptrapState_Chasing:    return "\"Chasing\"";
-            case cKlaptrapState_Attached:   return "\"Attached\"";
-            case cKlaptrapState_Launched:   return "\"Launched\"";
-            case cKlaptrapState_RunOver:    return "\"Run Over\"";
-            case cKlaptrapState_Despawning: return "\"Despawning\"";
-            default:                        return "\"Unknown\"";
-        }
     };
     auto blockTypeName = [](u8 in_type) -> std::string {
         switch (in_type){
@@ -1936,13 +1938,11 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
             snap.state = PowerPC::MMU::HostRead_U8(guard, obj + cPlant_State);
             snap.aux   = PowerPC::MMU::HostRead_U8(guard, obj + cPlant_Type);
             snap.flag  = PowerPC::MMU::HostRead_U8(guard, obj + cPlant_BallInMouth);
-            snap.scale = floatConverter(PowerPC::MMU::HostRead_U32(guard, obj + cPlant_Scale));
             snap.angle = floatConverter(PowerPC::MMU::HostRead_U32(guard, obj + cPlant_SpitAngle));
         }
         else if (update_fn == cUpdateFn_PalaceChomp){
             snap.kind  = static_cast<u8>(HAZARD_TYPE::CHOMP);
             snap.state = PowerPC::MMU::HostRead_U8(guard, obj + cChomp_State);
-            snap.angle = floatConverter(PowerPC::MMU::HostRead_U32(guard, obj + cChomp_TargetAngle));
         }
         else if (update_fn == cUpdateFn_PalaceTornado){
             snap.kind  = static_cast<u8>(HAZARD_TYPE::TORNADO);
@@ -1973,7 +1973,6 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
             snap.state = PowerPC::MMU::HostRead_U8(guard, obj + cKlaptrap_State);
             snap.aux   = PowerPC::MMU::HostRead_U8(guard, obj + cKlaptrap_AttachedFielder);
             snap.flag  = PowerPC::MMU::HostRead_U8(guard, obj + cKlaptrap_StarAwarded);
-            snap.angle = floatConverter(PowerPC::MMU::HostRead_U32(guard, obj + cKlaptrap_FlightYaw));
         }
         else if (update_fn == 0 && on_collision_fn == cOnCollisionFn_JungleBarrel){
             snap.kind  = static_cast<u8>(HAZARD_TYPE::BARREL);
@@ -2077,7 +2076,6 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                                                            static_cast<u8>(HAZARD_INTERACTION::BALL_CONTACT), getParentSequence(prev), frame);
                 readBallPos(hazard_event);
                 hazard_event.details.push_back({"Spit Angle", floatToJSON(now.angle), ""});
-                hazard_event.details.push_back({"Plant Scale", floatToJSON(now.scale), ""});
                 ball_contact_logged[i] = true;
                 std::cout << "Hazard: Plant " << std::to_string(now.slot) << " ate the ball. Frame=" << std::to_string(frame) << "\n";
             }
@@ -2086,7 +2084,6 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                 HazardEvent& hazard_event = addHazardEvent(in_contact, static_cast<u8>(HAZARD_TYPE::RED_PLANT), now.slot,
                                                            static_cast<u8>(HAZARD_INTERACTION::PROJECTILE), getParentSequence(prev), frame);
                 readBallPos(hazard_event);
-                hazard_event.details.push_back({"Spit Angle", floatToJSON(now.angle), ""});
                 waitForVelocity(i, true);
                 ball_contact_logged[i] = true;
                 std::cout << "Hazard: Plant " << std::to_string(now.slot) << " spat the ball. Frame=" << std::to_string(frame) << "\n";
@@ -2114,17 +2111,15 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                 hazard_event.result_velocity = std::array<u32, 3>{PowerPC::MMU::HostRead_U32(guard, obj + cChomp_Velo_X),
                                                                   PowerPC::MMU::HostRead_U32(guard, obj + cChomp_Velo_Y),
                                                                   PowerPC::MMU::HostRead_U32(guard, obj + cChomp_Velo_Z)};
-                hazard_event.details.push_back({"Target Angle", floatToJSON(now.angle), ""});
                 hazard_event.details.push_back({"From State", (prev.state == cChompState_Stalking) ? "\"Stalking\"" : "\"Awake\"", ""});
-                hazard_event.details.push_back({"Attacks Remaining", std::to_string(static_cast<s16>(PowerPC::MMU::HostRead_U16(guard, obj + cChomp_AttacksRemaining))), ""});
                 std::cout << "Hazard: Chomp " << std::to_string(now.slot) << " attacked. Frame=" << std::to_string(frame) << "\n";
             }
-            //Chomp knocked the ball away. It heads home afterwards and the game leaves the ball on the edge of its hit radius,
-            //so confirm with the hit marker the game displays or the ball's distance
+            //Chomp knocked the ball away. A lunge also ends when the chain runs out or when it knocks a fielder over,
+            //and both of those leave it sitting next to the ball, so the hit marker the game posts is the only proof
+            //it actually hit the ball. chomp_attack only sets that marker on the frame it knocks the ball
             if (prev.state == cChompState_Attacking && now.state == cChompState_ReturningHome){
                 bool marker_shown = (m_hazard_state.chomp_ball_marker == 0 && chomp_ball_marker != 0);
-                float dist = xzDistance(ball_x, ball_z, now.x, now.z);
-                if (marker_shown || dist <= cHazard_ChompRadius + 1.0f){
+                if (marker_shown){
                     HazardEvent& hazard_event = addHazardEvent(in_contact, static_cast<u8>(HAZARD_TYPE::CHOMP), now.slot,
                                                                static_cast<u8>(HAZARD_INTERACTION::BALL_CONTACT), getParentSequence(prev), frame);
                     readBallPos(hazard_event);
@@ -2139,7 +2134,6 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
             if (prev.state == cTornadoState_Idle && now.state == cTornadoState_Triggered){
                 getParentSequence(prev);
                 prev.aux_pos = ball_pos;
-                prev.aux_frame = frame;
             }
             //Ball got pulled in
             if (prev.state == cTornadoState_Triggered && now.state == cTornadoState_BallCaptured){
@@ -2149,7 +2143,6 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                 hazard_event.details.push_back({"Entered", "true", ""});
                 hazard_event.details.push_back({"Spin Direction", std::to_string(static_cast<s8>(now.aux)), ""});
                 hazard_event.details.push_back({"Release Angle", floatToJSON(now.angle), ""});
-                hazard_event.details.push_back({"Trigger Frame", std::to_string(prev.aux_frame), ""});
                 ball_contact_logged[i] = true;
                 std::cout << "Hazard: Ball entered tornado " << std::to_string(now.slot) << ". Frame=" << std::to_string(frame) << "\n";
             }
@@ -2162,7 +2155,6 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                 hazard_event.pos_z = prev.aux_pos[2];
                 hazard_event.details.push_back({"Entered", "false", ""});
                 hazard_event.details.push_back({"Spin Direction", std::to_string(static_cast<s8>(now.aux)), ""});
-                hazard_event.details.push_back({"Trigger Frame", std::to_string(prev.aux_frame), ""});
                 std::cout << "Hazard: Ball triggered tornado " << std::to_string(now.slot) << " without entering. Frame=" << std::to_string(frame) << "\n";
             }
             //Tornado threw the ball back out
@@ -2170,7 +2162,6 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                 HazardEvent& hazard_event = addHazardEvent(in_contact, static_cast<u8>(HAZARD_TYPE::TORNADO), now.slot,
                                                            static_cast<u8>(HAZARD_INTERACTION::PROJECTILE), getParentSequence(prev), frame);
                 readBallPos(hazard_event);
-                hazard_event.details.push_back({"Release Angle", floatToJSON(now.angle), ""});
                 hazard_event.details.push_back({"Spin Direction", std::to_string(static_cast<s8>(now.aux)), ""});
                 waitForVelocity(i, true);
                 ball_contact_logged[i] = true;
@@ -2201,7 +2192,6 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                 hazard_event.pos_z = PowerPC::MMU::HostRead_U32(guard, obj + cCastleObj_Pos_Z);
                 u32 fall_speed = PowerPC::MMU::HostRead_U32(guard, obj + cThwomp_FallSpeed);
                 hazard_event.result_velocity = std::array<u32, 3>{0, fall_speed, 0};
-                hazard_event.details.push_back({"Fall Speed", floatToJSON(floatConverter(fall_speed)), ""});
                 prev.aux_event = in_contact->hazard_events.size() - 1;
                 prev.aux_event_valid = true;
                 std::cout << "Hazard: Thwomp " << std::to_string(now.slot) << " dropped. Frame=" << std::to_string(frame) << "\n";
@@ -2225,19 +2215,23 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                                                PowerPC::MMU::HostRead_U32(guard, obj + cFlame_Velo_Y),
                                                PowerPC::MMU::HostRead_U32(guard, obj + cFlame_Velo_Z)};
                 hazard_event.result_velocity = velocity;
-                float launch_angle = std::atan2(floatConverter(velocity[2]), floatConverter(velocity[0])) * (180.0f / 3.14159265f);
-                hazard_event.details.push_back({"Launch Angle", floatToJSON(launch_angle), ""});
                 std::cout << "Hazard: Flame " << std::to_string(now.slot) << " launched a fireball. Frame=" << std::to_string(frame) << "\n";
             }
-            //Ball flew through the fireball and put it out. Hitting the ground ends it the same way, so check the ball was there
-            if (prev.state == cFlameState_Flying && now.state == cFlameState_Ended){
+            //Ball flew through the fireball and put it out. flameControl ends the fireball the same way when it hits the
+            //ground, which every fireball eventually does, so this transition alone proves nothing. The game only runs its
+            //ball test when no fielder has the ball, and uses a 3D radius of cHazard_FlameRadius. Its end branch overwrites
+            //the fireball's Y (to 10) but leaves X/Z on the spot it died, so only the XZ part of that test can be redone
+            //here. XZ at the same radius never rejects a real hit - it just also accepts a ball passing high overhead
+            if (prev.state == cFlameState_Flying && now.state == cFlameState_Ended && !fielder_has_ball){
                 float dist = xzDistance(ball_x, ball_z, now.x, now.z);
-                if (dist <= cHazard_FlameRadius + 1.5f){
+                if (dist <= cHazard_FlameRadius){
                     HazardEvent& hazard_event = addHazardEvent(in_contact, static_cast<u8>(HAZARD_TYPE::FIREBALL), now.slot,
                                                                static_cast<u8>(HAZARD_INTERACTION::BALL_CONTACT), getParentSequence(prev), frame);
                     readBallPos(hazard_event);
                     ball_contact_logged[i] = true;
-                    std::cout << "Hazard: Ball put out fireball from flame " << std::to_string(now.slot) << ". Frame=" << std::to_string(frame) << "\n";
+                    //Y values are logged so the stored-Y convention can be confirmed and this tightened to the real 3D test
+                    std::cout << "Hazard: Ball put out fireball from flame " << std::to_string(now.slot) << ". Frame=" << std::to_string(frame)
+                              << " XZ dist=" << dist << " ball Y=" << ball_y << " flame Y last frame=" << prev.y << "\n";
                 }
             }
         }
@@ -2289,7 +2283,8 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                 HazardEvent& hazard_event = addHazardEvent(in_contact, static_cast<u8>(HAZARD_TYPE::KLAPTRAP), now.slot,
                                                            static_cast<u8>(HAZARD_INTERACTION::FIELDER_CONTACT), getParentSequence(prev), frame);
                 addFielderToHazardEvent(guard, hazard_event, now.aux);
-                hazard_event.details.push_back({"Attached Klaptraps", std::to_string(PowerPC::MMU::HostRead_U8(guard, aFielder_AttachedKlaptraps + (now.aux * cFielder_Offset))), ""});
+                //Running count carried across at bats, sampled at the moment of the bite (includes this one)
+                hazard_event.details.push_back({"Total Attached Klaptraps", std::to_string(PowerPC::MMU::HostRead_U8(guard, aFielder_AttachedKlaptraps + (now.aux * cFielder_Offset))), ""});
                 std::cout << "Hazard: Klaptrap " << std::to_string(now.slot) << " bit fielder pos " << std::to_string(now.aux) << ". Frame=" << std::to_string(frame) << "\n";
             }
             //Ball hit the klaptrap and knocked it off (a star is awarded when star skills are on)
@@ -2298,20 +2293,20 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                                                            static_cast<u8>(HAZARD_INTERACTION::BALL_CONTACT), getParentSequence(prev), frame);
                 readBallPos(hazard_event);
                 hazard_event.details.push_back({"Star Awarded", (prev.flag == 0 && now.flag != 0) ? "true" : "false", ""});
-                hazard_event.details.push_back({"Launch Angle", floatToJSON(now.angle * (180.0f / 3.14159265f)), ""});
-                hazard_event.details.push_back({"From State", klaptrapStateName(prev.state), ""});
                 waitForVelocity(i, false);
                 ball_contact_logged[i] = true;
                 std::cout << "Hazard: Ball hit klaptrap " << std::to_string(now.slot) << ". Frame=" << std::to_string(frame) << "\n";
             }
-            //A rolling barrel knocked it off a fielder or ran it over. Note it on that barrel's launch event
+            //A rolling barrel knocked it off a fielder or ran it over. Both are counted on that barrel:
+            //a detach goes on its fielder contact event (that is when it happens), a flattening on its launch event
             bool detached = (prev.state == cKlaptrapState_Attached && now.state == cKlaptrapState_Launched);
             bool run_over = (prev.state < cKlaptrapState_Attached && now.state == cKlaptrapState_RunOver);
             if (detached || run_over){
                 int closest = -1;
                 float closest_dist = 0;
                 for (u32 b = 0; b < obj_count; ++b){
-                    if (!objects[b].valid || objects[b].kind != static_cast<u8>(HAZARD_TYPE::BARREL) || !m_hazard_state.objects[b].aux_event_valid) { continue; }
+                    if (!objects[b].valid || objects[b].kind != static_cast<u8>(HAZARD_TYPE::BARREL)) { continue; }
+                    if (objects[b].state != cBarrelState_Rolling && m_hazard_state.objects[b].state != cBarrelState_Rolling) { continue; }
                     float dist = xzDistance(now.x, now.z, objects[b].x, objects[b].z);
                     if (closest < 0 || dist < closest_dist){
                         closest = b;
@@ -2319,7 +2314,20 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                     }
                 }
                 if (closest >= 0){
-                    in_contact->hazard_events[m_hazard_state.objects[closest].aux_event].details.push_back({detached ? "Detached Klaptrap" : "Ran Over Klaptrap", std::to_string(now.slot), ""});
+                    HazardObjSnapshot& barrel = m_hazard_state.objects[closest];
+                    if (detached){
+                        //The knockout event may not exist yet this frame. It picks the count up when it is created
+                        ++barrel.detached_klaptraps;
+                        if (barrel.fielder_event_valid){
+                            setHazardDetail(in_contact->hazard_events[barrel.fielder_event], "Detached Klaptraps", std::to_string(barrel.detached_klaptraps));
+                        }
+                    }
+                    else {
+                        ++barrel.ran_over_klaptraps;
+                        if (barrel.aux_event_valid){
+                            setHazardDetail(in_contact->hazard_events[barrel.aux_event], "Ran Over Klaptraps", std::to_string(barrel.ran_over_klaptraps));
+                        }
+                    }
                 }
                 std::cout << "Hazard: Barrel " << (detached ? "detached" : "ran over") << " klaptrap " << std::to_string(now.slot) << ". Frame=" << std::to_string(frame) << "\n";
             }
@@ -2392,7 +2400,6 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
     for (u32 n = 0; n < cGarden_HitMarkerCount; ++n){
         if (m_hazard_state.garden_hit_markers[n] != 0 || garden_hit_markers[n] == 0) { continue; }
         u8 hit_variant = static_cast<u8>(n / 2);
-        float ball_y = floatConverter(ball_pos[1]);
 
         //Closest block of that kind to the ball. The table stores the block's Y with the opposite sign to the ball's
         int closest = -1;
@@ -2477,6 +2484,12 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
         HazardEvent& hazard_event = addHazardEvent(in_contact, hazard.kind, hazard.slot,
                                                    static_cast<u8>(HAZARD_INTERACTION::FIELDER_CONTACT), getParentSequence(m_hazard_state.objects[closest]), frame);
         addFielderToHazardEvent(guard, hazard_event, pos);
+        //Klaptraps riding the fielder are knocked off by the same hit. They can come loose a frame either side of it
+        if (hazard.kind == static_cast<u8>(HAZARD_TYPE::BARREL)){
+            m_hazard_state.objects[closest].fielder_event = in_contact->hazard_events.size() - 1;
+            m_hazard_state.objects[closest].fielder_event_valid = true;
+            setHazardDetail(hazard_event, "Detached Klaptraps", std::to_string(m_hazard_state.objects[closest].detached_klaptraps));
+        }
         std::cout << "Hazard: " << decode("HazardType", hazard.kind, true) << " " << std::to_string(hazard.slot)
                   << " knocked out fielder pos " << std::to_string(pos) << ". Frame=" << std::to_string(frame) << "\n";
     }
@@ -2518,7 +2531,6 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
                 HazardEvent& hazard_event = addHazardEvent(in_contact, hazard_type, objects[closest].slot,
                                                            static_cast<u8>(HAZARD_INTERACTION::BALL_CONTACT), getParentSequence(m_hazard_state.objects[closest]), frame);
                 readBallPos(hazard_event);
-                hazard_event.details.push_back({"Collision Code", std::to_string(collision_code), ""});
                 if (hazard_type == static_cast<u8>(HAZARD_TYPE::STAR_PAD)) { hazard_event.details.push_back({"Star Awarded", "false", ""}); }
                 waitForVelocity(static_cast<u32>(closest), false);
                 std::cout << "Hazard: Ball bounced off " << decode("HazardType", hazard_type, true) << " " << std::to_string(objects[closest].slot) << ". Frame=" << std::to_string(frame) << "\n";
@@ -2544,15 +2556,21 @@ void StatTracker::logHazardEvents(const Core::CPUThreadGuard& guard, Contact* in
         else if (now.kind == static_cast<u8>(HAZARD_TYPE::KLAPTRAP)) { group_over = (now.state <= cKlaptrapState_Walking || now.state == cKlaptrapState_Despawning); }
         u16 parent_sequence = group_over ? 0 : prev.parent_sequence;
         std::array<u32, 3> aux_pos = prev.aux_pos;
-        u16 aux_frame = prev.aux_frame;
         size_t aux_event = prev.aux_event;
         bool aux_event_valid = prev.aux_event_valid;
+        size_t fielder_event = prev.fielder_event;
+        bool fielder_event_valid = prev.fielder_event_valid && !group_over;
+        u8 detached_klaptraps = group_over ? 0 : prev.detached_klaptraps;
+        u8 ran_over_klaptraps = group_over ? 0 : prev.ran_over_klaptraps;
         prev = now;
         prev.parent_sequence = parent_sequence;
         prev.aux_pos = aux_pos;
-        prev.aux_frame = aux_frame;
         prev.aux_event = aux_event;
         prev.aux_event_valid = aux_event_valid;
+        prev.fielder_event = fielder_event;
+        prev.fielder_event_valid = fielder_event_valid;
+        prev.detached_klaptraps = detached_klaptraps;
+        prev.ran_over_klaptraps = ran_over_klaptraps;
     }
     m_hazard_state.fielder_knockout = knockouts;
     m_hazard_state.frames_since_last_bounce = frames_since_bounce;
@@ -2593,8 +2611,14 @@ std::string StatTracker::getHazardEventsJSON(std::vector<HazardEvent>& in_events
             json_stream << indent3 << "\"Target - Y\": " << floatConverter(hazard_event.target->at(1)) << ",\n";
             json_stream << indent3 << "\"Target - Z\": " << floatConverter(hazard_event.target->at(2)) << ",\n";
         }
-        if (hazard_event.fielder.has_value()){
-            json_stream << indent3 << "\"Fielder\": " << std::to_string(hazard_event.fielder.value()) << ",\n";
+        if (hazard_event.fielder_roster_loc.has_value()){
+            json_stream << indent3 << "\"Fielder Roster Loc\": " << std::to_string(hazard_event.fielder_roster_loc.value()) << ",\n";
+        }
+        if (hazard_event.fielder_pos.has_value()){
+            json_stream << indent3 << "\"Fielder Position\": "   << decode("Position", hazard_event.fielder_pos.value(), inDecode) << ",\n";
+        }
+        if (hazard_event.fielder_char_id.has_value()){
+            json_stream << indent3 << "\"Fielder Character\": "  << decode("Character", hazard_event.fielder_char_id.value(), inDecode) << ",\n";
         }
         //Details is always last so nothing above has to worry about trailing commas
         json_stream << indent3 << "\"Details\": {";
