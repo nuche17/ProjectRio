@@ -1450,18 +1450,23 @@ public:
     void initPlayerInfo(const Core::CPUThreadGuard& guard);
     void initCaptains(const Core::CPUThreadGuard& guard);
 
-    //If mid-game, dump game
+    //If mid-game or post-game (final play done, waiting on END_OF_GAME), dump game
     void dumpGame(const Core::CPUThreadGuard& guard){
-        if (m_game_state == GAME_STATE::INGAME){
-            m_game_info.quitter_team = 2;
+        if (m_game_state == GAME_STATE::INGAME || m_game_state == GAME_STATE::POSTGAME){
             logGameInfo(guard);
 
-            //Remove current event, wasn't finished
-            auto it = m_game_info.events.find(m_game_info.event_num);
-            if (it != m_game_info.events.end())
-            {
-              m_game_info.events.erase(it);
+            if (m_game_state == GAME_STATE::INGAME){
+                m_game_info.quitter_team = 2;
+
+                //Remove current event, wasn't finished
+                auto it = m_game_info.events.find(m_game_info.event_num);
+                if (it != m_game_info.events.end())
+                {
+                  m_game_info.events.erase(it);
+                }
             }
+            //POSTGAME: the game is complete and the current event is the finished final play, so keep it.
+            //End-of-game results may not be computed yet, so they are left unset.
 
             //Game has ended. Write file but do not submit
             std::string jsonPath = getStatJsonPath("crash.decode.");
