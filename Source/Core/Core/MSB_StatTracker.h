@@ -54,6 +54,7 @@ enum class GAME_STATE
   GAME_SETTINGS,
   PREGAME,
   INGAME,
+  POSTGAME,
   ENDGAME_LOGGED,
   UNDEFINED
 };
@@ -64,6 +65,7 @@ static std::map<GAME_STATE, std::string> c_game_state = {
     {GAME_STATE::GAME_SETTINGS, "GAME_SETTINGS"},
     {GAME_STATE::PREGAME, "PREGAME"},
     {GAME_STATE::INGAME, "INGAME"},
+    {GAME_STATE::POSTGAME, "POSTGAME"},
     {GAME_STATE::ENDGAME_LOGGED, "ENDGAME_LOGGED"},
     {GAME_STATE::UNDEFINED, "UNDEFINED"}
 };
@@ -393,6 +395,11 @@ static const std::map<u8, std::string> cDeadBallReason = {
     {0x4,  "Ball Dead"}
 };
 
+static const std::map<u8, std::string> cWinner = {
+    {0x0,  "Away"},
+    {0x1,  "Home"},
+    {0x2,  "Tie"}
+};
 static const std::map<u8, std::string> cManualSelectDecode = {
     {0x0,  "No Selected Char"},
     {0x1,  "Pitcher"},
@@ -455,6 +462,22 @@ static const u32 aEndOfGameFlag    = 0x80892AB3;
 static const u32 aWhoQuit          = 0x802EBF93;
 static const u32 aGameControlStateCurr = 0x80892aaa;
 static const u32 aGameControlStatePrev = 0x80892aab;
+
+//Game status values (aGameControlStateCurr). The end-of-game results below are written while
+//the status is TRANSITION (0x08), immediately before it moves to END_OF_GAME (0x09).
+static const u8 cGameStatus_EndOfGame = 0x09; //Scorebook screen after the final play
+static const u8 cGameStatus_MVPScreen = 0x0E;
+
+//Addrs for end-of-game results. Written once per game by the game's own end-of-game stat pass
+static const u32 aWinnerCd = 0x80892944; //s16. 0=Away, 1=Home, 2=Tie
+//Pitchers are roster locs (s8, -1 = none) on the winning team, except losing pitcher which is on the losing team
+static const u32 aEndGame_WinningPitcher = 0x80353B83;
+static const u32 aEndGame_LosingPitcher  = 0x80353B84;
+static const u32 aEndGame_SavePitcher    = 0x80353B85; //-1 if no save
+//MVP leader per team (storedInningInfo.mvpLeader): s16 roster loc, index with (away/home * 4). -1 = none.
+//Used instead of the MVP screen's char id, which shows a captain rather than the MVP on ties and 1P losses to the CPU.
+//The game skips the MVP calc entirely in 1P games the CPU wins, so it stays -1 there.
+static const u32 aEndGame_MVPLeader      = 0x80893BCC;
 
 static const u32 aAB_PitchThrown     = 0x8088A81B;
 static const u32 aAB_ContactResult   = 0x808926B3; //0=InAir, 1=Landed, 2=Fielded, 3=Caught, FF=Foul
@@ -970,6 +993,14 @@ public:
         //Quit?
         u8 quitter_team = 0xFF;
 
+        //End-of-game results, read once the game reaches END_OF_GAME. 0xFF = not set (quit, crash, or no save)
+        u8 winner = 0xFF; //0=Away, 1=Home, 2=Tie
+        //Roster locs (away/home indexed, like character_summaries). MVP/W/S are on the winning team, L on the losing team
+        u8 mvp_roster_loc = 0xFF;
+        u8 winning_pitcher_roster_loc = 0xFF;
+        u8 losing_pitcher_roster_loc = 0xFF;
+        u8 save_pitcher_roster_loc = 0xFF;
+
         //Tracks the current batter for each team across half-inning switches; index 0=Away, 1=Home
         std::array<u8, 2> current_batter_roster_locs = {0, 0};
 
@@ -1253,6 +1284,7 @@ public:
     void lookForTriggerEvents(const Core::CPUThreadGuard& guard);
 
     void logGameInfo(const Core::CPUThreadGuard& guard);
+    void logEndGameResults(const Core::CPUThreadGuard& guard);
     void logDefensiveStats(const Core::CPUThreadGuard& guard, int team_id, int roster_id);
     void logOffensiveStats(const Core::CPUThreadGuard& guard, int team_id, int roster_id);
     
@@ -1343,8 +1375,10 @@ public:
 
     //Returns JSON, PathToWriteTo
     std::string getStatJSON(bool inDecode, bool hide_riokey = true);
+    std::string getPostGameJSONFields(bool inDecode);
     std::string getEventJSON(u16 in_event_num, Event& in_event, bool inDecode);
-    std::string getHUDJSON(std::string in_event_num, Event& in_curr_event, std::optional<Event> in_prev_event, bool inDecode);
+    //in_postgame adds the end-of-game results; every other field is the same as the in-game HUD
+    std::string getHUDJSON(std::string in_event_num, Event& in_curr_event, std::optional<Event> in_prev_event, bool inDecode, bool in_postgame = false);
     std::string getPreGameHUDJSON(const Core::CPUThreadGuard& guard, bool inDecode);
     //Returns path to save json
     std::string getStatJsonPath(std::string prefix);

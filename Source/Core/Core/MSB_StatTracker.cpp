@@ -621,7 +621,33 @@ void StatTracker::lookForTriggerEvents(const Core::CPUThreadGuard& guard)
             break;
         case (GAME_STATE::INGAME):
             if (m_event_state == EVENT_STATE::GAME_OVER){
+                std::cout << "INGAME->POSTGAME\n";
+                m_game_state = GAME_STATE::POSTGAME;
+            }
+            break;
+        case (GAME_STATE::POSTGAME):
+        {
+            // The game computes the MVP and W/L/S pitchers during TRANSITION, then moves to END_OF_GAME.
+            // MVP screen and game id clearing are fallbacks in case END_OF_GAME is missed.
+            u8 game_status = PowerPC::MMU::HostRead_U8(guard, aGameControlStateCurr);
+            bool results_ready = (game_status == cGameStatus_EndOfGame) || (game_status == cGameStatus_MVPScreen);
+            bool game_exited = (PowerPC::MMU::HostRead_U32(guard, aGameId) == 0);
+            if (results_ready || game_exited){
                 logGameInfo(guard);
+                if (results_ready){
+                    logEndGameResults(guard);
+                }
+
+                //Post-game HUD. The final event's scoreboard was captured before the final play, so
+                //re-read it into a copy. Previous Event stays as the game-ending play.
+                if (m_game_info.currentEventVld() && !NetPlay::NetPlay_IsDesyncDetected()){
+                    Event final_event = m_game_info.getCurrentEvent();
+                    logEventState(guard, final_event);
+                    std::string event_num = std::to_string(m_game_info.event_num) + "c";
+                    writeHUDFiles(getHUDJSON(event_num, final_event, m_game_info.previous_state, true, true),
+                                  getHUDJSON(event_num, final_event, m_game_info.previous_state, false, true));
+                }
+
                 std::cout << "Logging Character Stats\n";
 
                 std::string jsonPath = getStatJsonPath("decoded.");
@@ -659,12 +685,13 @@ void StatTracker::lookForTriggerEvents(const Core::CPUThreadGuard& guard)
                 }
 
                 std::cout << "Logging to " << jsonPath << "\n";
-                std::cout << "INGAME->ENDGAME\n";
+                std::cout << "POSTGAME->ENDGAME\n";
 
 
                 m_game_state = GAME_STATE::ENDGAME_LOGGED;
             }
             break;
+        }
         case (GAME_STATE::ENDGAME_LOGGED):
             init();
 
@@ -713,6 +740,40 @@ void StatTracker::logGameInfo(const Core::CPUThreadGuard& guard){
             logOffensiveStats(guard, team, roster);
         }
     }
+}
+
+//Reads the game's own end-of-game results. Only valid once the game status has reached END_OF_GAME,
+//the game computes them during the TRANSITION status right before that.
+void StatTracker::logEndGameResults(const Core::CPUThreadGuard& guard){
+    s16 winner_cd = static_cast<s16>(PowerPC::MMU::HostRead_U16(guard, aWinnerCd));
+    m_game_info.winner = (winner_cd >= 0 && winner_cd <= 2) ? static_cast<u8>(winner_cd) : 0xFF;
+
+    //MVP and pitchers are roster locs. winner_cd is away/home, same indexing as character_summaries.
+    //Roster locs are kept rather than char ids so duplicate characters on a team can be told apart
+    auto valid_roster_loc = [](s16 roster_loc) -> u8 {
+        return (roster_loc >= 0 && roster_loc < cRosterSize) ? static_cast<u8>(roster_loc) : 0xFF;
+    };
+    auto read_s8 = [&](u32 addr) -> s16 {
+        return static_cast<s8>(PowerPC::MMU::HostRead_U8(guard, addr));
+    };
+
+    //No MVP or pitchers on a tie
+    if (m_game_info.winner == 0 || m_game_info.winner == 1) {
+        u8 winning_team = m_game_info.winner;
+
+        s16 mvp_roster_loc = static_cast<s16>(PowerPC::MMU::HostRead_U16(guard, aEndGame_MVPLeader + (winning_team * 4)));
+        m_game_info.mvp_roster_loc = valid_roster_loc(mvp_roster_loc);
+
+        m_game_info.winning_pitcher_roster_loc = valid_roster_loc(read_s8(aEndGame_WinningPitcher));
+        m_game_info.losing_pitcher_roster_loc = valid_roster_loc(read_s8(aEndGame_LosingPitcher));
+        m_game_info.save_pitcher_roster_loc = valid_roster_loc(read_s8(aEndGame_SavePitcher));
+    }
+
+    std::cout << "End of game results: Winner=" << std::to_string(m_game_info.winner)
+              << " MVP Roster Loc=" << std::to_string(m_game_info.mvp_roster_loc)
+              << " Winning Pitcher Roster Loc=" << std::to_string(m_game_info.winning_pitcher_roster_loc)
+              << " Losing Pitcher Roster Loc=" << std::to_string(m_game_info.losing_pitcher_roster_loc)
+              << " Save Pitcher Roster Loc=" << std::to_string(m_game_info.save_pitcher_roster_loc) << "\n";
 }
 
 void StatTracker::logDefensiveStats(const Core::CPUThreadGuard& guard, int in_team_id, int roster_id)
@@ -1037,6 +1098,26 @@ std::string StatTracker::getStatJsonPath(std::string prefix){
     return full_file_path;
 }
 
+//Top-level end-of-game result fields, shared by the stat file and the post-game HUD.
+//Each line ends with ",\n". Unset values (quit, crash, tie, no save) are -1 encoded and null decoded.
+std::string StatTracker::getPostGameJSONFields(bool inDecode){
+    auto unset = [&]() -> std::string {
+        return inDecode ? "null" : "-1";
+    };
+    auto roster_loc_or_unset = [&](u8 roster_loc) -> std::string {
+        return (roster_loc == 0xFF) ? unset() : std::to_string(roster_loc);
+    };
+
+    //MVP/W/S roster locs are on the winning team, L on the losing team
+    std::stringstream json_stream;
+    json_stream << "  \"Winner\": "                     << ((m_game_info.winner == 0xFF) ? unset() : decode("Winner", m_game_info.winner, inDecode)) << ",\n";
+    json_stream << "  \"MVP Roster Loc\": "             << roster_loc_or_unset(m_game_info.mvp_roster_loc) << ",\n";
+    json_stream << "  \"Winning Pitcher Roster Loc\": " << roster_loc_or_unset(m_game_info.winning_pitcher_roster_loc) << ",\n";
+    json_stream << "  \"Losing Pitcher Roster Loc\": "  << roster_loc_or_unset(m_game_info.losing_pitcher_roster_loc) << ",\n";
+    json_stream << "  \"Save Pitcher Roster Loc\": "    << roster_loc_or_unset(m_game_info.save_pitcher_roster_loc) << ",\n";
+    return json_stream.str();
+}
+
 std::string StatTracker::getStatJSON(bool inDecode, bool hide_riokey){
     //TODO switch to IDs when submitting game
     std::string away_player_info = (inDecode || hide_riokey) ? m_game_info.getAwayTeamPlayer().GetUsername() : m_game_info.getAwayTeamPlayer().GetUserID();
@@ -1071,6 +1152,7 @@ std::string StatTracker::getStatJSON(bool inDecode, bool hide_riokey){
     json_stream << "  \"Innings Selected\": " << std::to_string(m_game_info.innings_selected) << ",\n";
     json_stream << "  \"Innings Played\": " << std::to_string(m_game_info.innings_played) << ",\n";
     json_stream << "  \"Quitter Team\": " << decode("QuitterTeam", m_game_info.quitter_team, inDecode) << ",\n";
+    json_stream << getPostGameJSONFields(inDecode);
 
     json_stream << "  \"Average Ping\": " << std::to_string(m_game_info.avg_ping) << ",\n";
     json_stream << "  \"Lag Spikes\": " << std::to_string(m_game_info.lag_spikes) << ",\n";
@@ -1392,7 +1474,7 @@ std::string StatTracker::getStatJSON(bool inDecode, bool hide_riokey){
     return json_stream.str();
 }
 
-std::string StatTracker::getHUDJSON(std::string in_event_num, Event& in_curr_event, std::optional<Event> in_prev_event, bool inDecode){
+std::string StatTracker::getHUDJSON(std::string in_event_num, Event& in_curr_event, std::optional<Event> in_prev_event, bool inDecode, bool in_postgame){
     std::stringstream json_stream;
 
     if (in_curr_event.inning == 0) {
@@ -1442,6 +1524,10 @@ std::string StatTracker::getHUDJSON(std::string in_event_num, Event& in_curr_eve
         if (i < in_curr_event.inning - 1) json_stream << ", ";
     }
     json_stream << "],\n";
+
+    if (in_postgame) {
+        json_stream << getPostGameJSONFields(inDecode);
+    }
 
     json_stream << "  \"Balls\": "                   << std::to_string(in_curr_event.balls) << ",\n";
     json_stream << "  \"Strikes\": "                 << std::to_string(in_curr_event.strikes) << ",\n";
@@ -2559,6 +2645,11 @@ std::string StatTracker::decode(std::string type, u8 value, bool decode){
     else if (type == "DeadBallReason"){
         if (cDeadBallReason.count(value)){
             retVal = cDeadBallReason.at(value);
+        }
+    }
+    else if (type == "Winner"){
+        if (cWinner.count(value)){
+            retVal = cWinner.at(value);
         }
     }
     else if (type == "QuitterTeam"){
