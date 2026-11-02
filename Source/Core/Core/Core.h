@@ -281,7 +281,9 @@ static const u32 aBallPosition_Z = 0x80890B40;
 static const u32 aBarrelBatterPort = 0x80890971; // port of character at bat in barrel batter & bom-omb derby
 static const u32 aWallBallPort = 0x80890AD9; // port of character pitching in wall ball
 static const u32 aMinigameID = 0x808980DE;  // 3 == Barrel Batter; 2 == Wall Ball; 1 == Bom-omb Derby; 4 == Chain Chomp Sprint; 5 == Piranha Panic; 6 == Star Dash; 7 == Grand Prix
-static const u32 aWhoPaused = 0x8039D7D3; // 2 == fielder, 1 == batter
+static const u32 aPausingSide = 0x80895F48;  // 0 == fielding team paused, 1 == batting team paused. Only valid while aIsPaused is set, and not set in Toy Field
+static const u32 aIsPaused = 0x80895F45;
+static const u32 aGameMode = 0x800E8703;  // 6 == Toy Field
 //static const u32 aMatchStarted = 0x8036F3B8;  // bool for if a game is in session
 static const u32 aSceneId = 0x800E877F;
 static const u32 aRelNumber = 0x800E877C;

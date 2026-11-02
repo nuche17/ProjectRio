@@ -316,9 +316,13 @@ void MSSBCalculateNextGolfer(const Core::CPUThreadGuard& guard, int& nextGolfer)
   if (rel != RelNumber::InGame)
     return;
 
-  // makes the player who paused the golfer
-  if (PowerPC::MMU::HostRead_U8(guard, aWhoPaused) == 2)
+  // makes the player who paused the golfer. Toy Field pauses without setting aPausingSide
+  if (PowerPC::MMU::HostRead_U8(guard, aIsPaused) != 0 &&
+      PowerPC::MMU::HostRead_U8(guard, aGameMode) != 6 &&
+      PowerPC::MMU::HostRead_U8(guard, aPausingSide) == 0)
+  {
     isField = true;
+  }
 
   // add minigame functionality
   int minigameId = PowerPC::MMU::HostRead_U8(guard, aMinigameID);

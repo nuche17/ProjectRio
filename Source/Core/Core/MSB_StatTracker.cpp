@@ -267,11 +267,6 @@ void StatTracker::lookForTriggerEvents(const Core::CPUThreadGuard& guard)
                 }
                 else if (hasLeftGame(guard)){
                     onGameQuit(guard);
-
-                    //Remove current event, wasn't finished
-                    auto it = m_game_info.events.find(m_game_info.event_num);
-                    m_game_info.events.erase(it);
-
                     m_event_state = EVENT_STATE::GAME_OVER;
                 }
                 break;
@@ -280,11 +275,6 @@ void StatTracker::lookForTriggerEvents(const Core::CPUThreadGuard& guard)
                 //Handle quit to main menu
                 if (hasLeftGame(guard)){
                     onGameQuit(guard);
-
-                    //Remove current event, wasn't finished
-                    auto it = m_game_info.events.find(m_game_info.event_num);
-                    m_game_info.events.erase(it);
-
                     m_event_state = EVENT_STATE::GAME_OVER;
                     break;
                 }
@@ -581,6 +571,13 @@ void StatTracker::lookForTriggerEvents(const Core::CPUThreadGuard& guard)
             break;
         case (GAME_STATE::INGAME):
             if (m_event_state == EVENT_STATE::GAME_OVER){
+                //onGameQuit already logged the game and wrote the quit files
+                if (m_game_info.game_quit){
+                    std::cout << "INGAME->ENDGAME\n";
+                    m_game_state = GAME_STATE::ENDGAME_LOGGED;
+                    break;
+                }
+
                 logGameInfo(guard);
                 std::cout << "Logging Character Stats\n";
 
@@ -2006,15 +2003,27 @@ void StatTracker::initCaptains(const Core::CPUThreadGuard& guard)
 }
 
 void StatTracker::onGameQuit(const Core::CPUThreadGuard& guard){
-    // only the team that opened the pause menu can quit from it
-    const u8 paused_by = PowerPC::MMU::HostRead_U8(guard, aPausedBy);
-    if (paused_by == 1 || paused_by == 2)
+    // only the team that opened the pause menu can quit from it. the owner isn't cleared when
+    // the menu closes, so it only counts while the game is paused. the pause data is part of the
+    // game rel, so it can't be read if the rel is already gone, e.g. after a reset
+    if (PowerPC::MMU::HostRead_U16(guard, aLoadedRel) == 5 && PowerPC::MMU::HostRead_U8(guard, aIsPaused) != 0)
     {
-        const u32 quitter_team = PowerPC::MMU::HostRead_U32(guard, paused_by == 1 ? aBattingTeam_P1P2 : aFieldingTeam_P1P2);
-        const u8 quitter_port = PowerPC::MMU::HostRead_U8(guard, quitter_team == 0 ? aPlayer1Port : aPlayer2Port);
-        m_game_info.quitter_team = (quitter_port == m_game_info.away_port);
+        const u32 quitter_team = PowerPC::MMU::HostRead_U32(guard, aPauseOwnerTeam);
+        if (quitter_team <= 1)
+        {
+            const u8 quitter_port = PowerPC::MMU::HostRead_U8(guard, quitter_team == 0 ? aPlayer1Port : aPlayer2Port);
+            m_game_info.quitter_team = (quitter_port == m_game_info.away_port);
+        }
     }
+    m_game_info.game_quit = true;
     logGameInfo(guard);
+
+    //Remove current event, wasn't finished
+    auto it = m_game_info.events.find(m_game_info.event_num);
+    if (it != m_game_info.events.end())
+    {
+        m_game_info.events.erase(it);
+    }
 
     std::cout << "Quit detected\n";
 
@@ -2029,15 +2038,7 @@ void StatTracker::onGameQuit(const Core::CPUThreadGuard& guard){
     
     File::WriteStringToFile(jsonPath, json);
 
-    // json = getStatJSON(false, false);
-    // if (shouldSubmitGame()) {
-    //     const Common::HttpRequest::Response response =
-    //     m_http.Post("https://api.projectrio.app/populate_db/", json,
-    //         {
-    //             {"Content-Type", "application/json"},
-    //         }
-    //     );
-    // }
+    //Quit games are not submitted to the server
 }
 
 std::optional<StatTracker::Runner> StatTracker::logRunnerInfo(const Core::CPUThreadGuard& guard, u8 base){
